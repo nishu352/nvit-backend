@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.env
+*.log
+.DS_Store
+coverage/
+temp/
+scripts/test-*.ts
+scripts/check-*.ts
+*.db
+prisma/*.db
+src/data/*.json

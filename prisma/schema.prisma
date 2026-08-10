@@ -1,0 +1,433 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ─── Enums ────────────────────────────────────────────────────────────────────
+
+enum Role {
+  SUPER_ADMIN
+  ADMIN
+  MANAGER
+  EXECUTIVE
+  VIEWER
+  USER
+}
+
+enum ImportType {
+  REPLACE
+  MERGE
+}
+
+enum ImportStatus {
+  PENDING
+  ANALYZING
+  MAPPING
+  VALIDATING
+  READY
+  PROCESSING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+enum LoanStatus {
+  FRESH
+  ASSIGNED
+  CONTACTED
+  INTERESTED
+  DOCUMENTS_PENDING
+  BANK_SUBMITTED
+  APPROVED
+  REJECTED
+  DISBURSED
+  LOST
+}
+
+// ─── Users ────────────────────────────────────────────────────────────────────
+
+model User {
+  id              String            @id @default(uuid())
+  email           String            @unique
+  password        String
+  name            String
+  role            Role              @default(USER)
+  isActive        Boolean           @default(true)
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+  importHistories ImportHistory[]
+  auditLogs       AuditLog[]
+  assignedLeads   LoanApplication[] @relation("ExecutiveLeads")
+
+  @@map("users")
+}
+
+// ─── Banks / NBFCs ────────────────────────────────────────────────────────────
+
+model Bank {
+  id                 String                  @id @default(uuid())
+  name               String                  @unique
+  code               String                  @unique
+  slug               String?                 @unique // URL-friendly slug e.g. "hdfc-bank"
+  type               String                  @default("BANK") // BANK | NBFC | FINTECH | OTHER
+  logoUrl            String?
+  isActive           Boolean                 @default(true)
+  priority           Int                     @default(0)
+  partnerStatus      String                  @default("ACTIVE") // ACTIVE | INACTIVE | PROBATION
+  policyPdfUrl       String?
+  displayOrder       Int                     @default(0)
+  eligibility        String?
+  processingFee      Float                   @default(0.0)
+  createdAt          DateTime                @default(now())
+  updatedAt          DateTime                @updatedAt
+  companyCategories  CompanyBankCategory[]
+  pincodeServices    PincodeServiceability[]
+  importHistories    ImportHistory[]
+  policies           BankPolicy[]
+  products           LoanProduct[]
+
+  @@index([type])
+  @@index([isActive])
+  @@map("banks")
+}
+
+// ─── Companies ────────────────────────────────────────────────────────────────
+
+model Company {
+  id             String                @id @default(uuid())
+  name           String                // Original display name (preserved as-is)
+  normalizedName String                @unique // Uppercased, stripped — for dedup & fast lookup
+  cin            String?               // CIN / Registration number
+  pincode        String?               // Primary operating pincode
+  city           String?               // City
+  state          String?               // State
+  district       String?               // District
+  status         String                @default("ACTIVE") // ACTIVE | INACTIVE
+  createdAt      DateTime              @default(now())
+  updatedAt      DateTime              @updatedAt
+  bankCategories CompanyBankCategory[]
+
+  @@index([normalizedName])
+  @@index([pincode])
+  @@index([city])
+  @@index([state])
+  @@index([status])
+  @@map("companies")
+}
+
+// ─── Company → Bank/NBFC → Category Mapping ──────────────────────────────────
+
+model CompanyBankCategory {
+  id        String   @id @default(uuid())
+  companyId String
+  bankId    String
+  category  String   // CAT A | CAT B | CAT C | UNLISTED | REJECT
+  status    String   @default("APPROVED") // APPROVED | CONDITIONAL | BLOCKED | REJECT
+  remarks   String?
+  source    String   @default("IMPORT") // IMPORT | MANUAL | API
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+
+  company   Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  bank      Bank     @relation(fields: [bankId], references: [id], onDelete: Cascade)
+
+  @@unique([companyId, bankId])
+  @@index([companyId])
+  @@index([bankId])
+  @@index([category])
+  @@index([bankId, category])   // Composite for bank+category queries
+  @@index([status])
+  @@map("company_bank_categories")
+}
+
+// ─── Pincode Serviceability ───────────────────────────────────────────────────
+
+model PincodeServiceability {
+  id            String   @id @default(uuid())
+  bankId        String
+  pincode       String
+  state         String?
+  city          String?
+  area          String?
+  isServiceable Boolean  @default(true)
+  isNegative    Boolean  @default(false)
+  category      String?  // PREFERRED | REGULAR | NEGATIVE
+  updatedAt     DateTime @default(now()) @updatedAt
+
+  bank          Bank     @relation(fields: [bankId], references: [id], onDelete: Cascade)
+
+  @@unique([bankId, pincode])
+  @@index([pincode])
+  @@index([bankId])
+  @@index([isServiceable])
+  @@index([city])
+  @@index([state])
+  @@map("pincode_serviceabilities")
+}
+
+// ─── Loan Applications (Leads) ────────────────────────────────────────────────
+
+model LoanApplication {
+  id                  String     @id @default(uuid())
+  name                String
+  mobile              String
+  email               String
+  city                String
+  state               String
+  company             String
+  monthlyIncome       Float
+  loanType            String
+  loanAmount          Float
+  remarks             String?
+  status              LoanStatus @default(FRESH)
+  assignedExecutiveId String?
+  assignedExecutive   User?      @relation("ExecutiveLeads", fields: [assignedExecutiveId], references: [id], onDelete: SetNull)
+  source              String     @default("WEBSITE") // WEBSITE | GOOGLE_ADS | MANUAL | API
+  timeline            Json?      // [{status, timestamp, note}]
+  internalNotes       Json?      // [{author, text, timestamp}]
+  attachments         Json?      // [{name, url, timestamp}]
+  reminders           Json?      // [{text, date, done}]
+  followUps           Json?      // [{date, status, comment}]
+  createdAt           DateTime   @default(now())
+  updatedAt           DateTime   @updatedAt
+
+  @@index([mobile])
+  @@index([status])
+  @@index([createdAt])
+  @@index([assignedExecutiveId])
+  @@map("loan_applications")
+}
+
+// ─── Import History ───────────────────────────────────────────────────────────
+
+model ImportHistory {
+  id               String        @id @default(uuid())
+  bankId           String
+  fileName         String
+  fileHash         String?       // SHA-256 hash of uploaded file for audit
+  importType       ImportType    @default(MERGE)
+  totalRecords     Int           @default(0)
+  processedRecords Int           @default(0)
+  skippedRecords   Int           @default(0)
+  failedRecords    Int           @default(0)
+  status           ImportStatus  @default(PENDING)
+  errorMessage     String?
+  mappingJson      String?       // JSON: confirmed column mapping used for this import
+  startedAt        DateTime?
+  completedAt      DateTime?
+  createdById      String
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+
+  bank             Bank          @relation(fields: [bankId], references: [id], onDelete: Cascade)
+  createdBy        User          @relation(fields: [createdById], references: [id])
+  importErrors     ImportError[]
+
+  @@index([status])
+  @@index([createdAt])
+  @@index([bankId])
+  @@map("import_histories")
+}
+
+// ─── Import Errors (row-level) ────────────────────────────────────────────────
+
+model ImportError {
+  id            String        @id @default(uuid())
+  importJobId   String
+  rowNumber     Int
+  columnName    String?
+  errorCode     String        // MISSING_NAME | DUPLICATE | INVALID_CATEGORY | etc.
+  errorMessage  String
+  rawData       String?       // Sanitized representation of the offending row
+  createdAt     DateTime      @default(now())
+
+  importJob     ImportHistory @relation(fields: [importJobId], references: [id], onDelete: Cascade)
+
+  @@index([importJobId])
+  @@index([errorCode])
+  @@map("import_errors")
+}
+
+// ─── Audit Log ────────────────────────────────────────────────────────────────
+
+model AuditLog {
+  id        String   @id @default(uuid())
+  userId    String?
+  userEmail String?
+  action    String
+  entity    String
+  entityId  String?
+  details   String?  // JSON string of metadata
+  ipAddress String?
+  createdAt DateTime @default(now())
+
+  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([createdAt])
+  @@index([action])
+  @@index([entity])
+  @@map("audit_logs")
+}
+
+// ─── Bank Policy ──────────────────────────────────────────────────────────────
+
+model BankPolicy {
+  id                 String              @id @default(uuid())
+  bankId             String
+  minSalary          Float               @default(0.0)
+  maxSalary          Float               @default(99999999.0)
+  companyCategory    String              // CAT A | CAT B | UNLISTED
+  minAge             Int                 @default(21)
+  maxAge             Int                 @default(60)
+  foir               Float               @default(0.0)
+  minCibil           Int                 @default(650)
+  roi                Float               @default(10.5)
+  processingFee      Float               @default(1.0)
+  minLoanAmount      Float               @default(50000.0)
+  maxLoanAmount      Float               @default(50000000.0)
+  minTenure          Int                 @default(12)
+  maxTenure          Int                 @default(360)
+  employmentType     String              @default("SALARIED")
+  requiredDocuments  String              @default("PAN, AADHAAR, SALARY_SLIP_3M, BANK_STATEMENT_6M")
+  notes              String?
+  version            Int                 @default(1)
+  isActive           Boolean             @default(true)
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+
+  bank               Bank                @relation(fields: [bankId], references: [id], onDelete: Cascade)
+  history            BankPolicyHistory[]
+
+  @@map("bank_policies")
+}
+
+model BankPolicyHistory {
+  id                 String     @id @default(uuid())
+  policyId           String
+  minSalary          Float
+  maxSalary          Float
+  companyCategory    String
+  minAge             Int
+  maxAge             Int
+  foir               Float
+  minCibil           Int
+  roi                Float
+  processingFee      Float
+  minLoanAmount      Float
+  maxLoanAmount      Float
+  minTenure          Int
+  maxTenure          Int
+  employmentType     String
+  requiredDocuments  String
+  notes              String?
+  version            Int
+  changedById        String?
+  changedByEmail     String?
+  createdAt          DateTime   @default(now())
+
+  policy             BankPolicy @relation(fields: [policyId], references: [id], onDelete: Cascade)
+
+  @@map("bank_policy_history")
+}
+
+// ─── Loan Products ────────────────────────────────────────────────────────────
+
+model LoanProduct {
+  id          String   @id @default(uuid())
+  bankId      String
+  name        String
+  code        String
+  isActive    Boolean  @default(true)
+  description String?
+  roiRange    String?
+  maxTenure   Int?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  bank        Bank     @relation(fields: [bankId], references: [id], onDelete: Cascade)
+
+  @@unique([bankId, code])
+  @@map("loan_products")
+}
+
+// ─── CMS & Settings ───────────────────────────────────────────────────────────
+
+model WebsiteCMS {
+  id        String   @id @default(uuid())
+  key       String   @unique
+  value     Json
+  updatedAt DateTime @updatedAt
+
+  @@map("website_cms")
+}
+
+model MarketingSettings {
+  id        String   @id @default(uuid())
+  key       String   @unique
+  value     Json
+  updatedAt DateTime @updatedAt
+
+  @@map("marketing_settings")
+}
+
+model SEOSettings {
+  id              String   @id @default(uuid())
+  route           String   @unique
+  title           String
+  description     String
+  keywords        String
+  ogTitle         String?
+  ogDescription   String?
+  ogImage         String?
+  twitterCard     String?  @default("summary_large_image")
+  robots          String?  @default("index, follow")
+  canonicalUrl    String?
+  sitemapUrl      String?
+  updatedAt       DateTime @updatedAt
+
+  @@map("seo_settings")
+}
+
+model SystemSettings {
+  id        String   @id @default(uuid())
+  key       String   @unique
+  value     Json
+  updatedAt DateTime @updatedAt
+
+  @@map("system_settings")
+}
+
+// ─── API Keys ─────────────────────────────────────────────────────────────────
+
+model ApiKey {
+  id          String   @id @default(uuid())
+  name        String
+  key         String   @unique
+  role        Role     @default(VIEWER)
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  lastUsedAt  DateTime?
+
+  @@map("api_keys")
+}
+
+// ─── Sessions ─────────────────────────────────────────────────────────────────
+
+model Session {
+  id        String   @id @default(uuid())
+  userId    String
+  token     String   @unique
+  ipAddress String?
+  userAgent String?
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@map("sessions")
+}
