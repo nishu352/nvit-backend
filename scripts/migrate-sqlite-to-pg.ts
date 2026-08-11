@@ -11,10 +11,8 @@
 import initSqlJs from "sql.js";
 import { readFileSync } from "fs";
 import path from "path";
-import { fileURLToPath } from "url";
 import { PrismaClient } from "@prisma/client";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SQLITE_PATH = path.resolve(__dirname, "../prisma/dev.db");
 const CHUNK = 1000; // rows per bulk INSERT statement
 

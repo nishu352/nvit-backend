@@ -33,7 +33,16 @@ export async function buildApp() {
 
   await app.register(cors, {
     origin: (origin, cb) => {
-      if (!origin || /http:\/\/localhost:(3000|3001|3002|3003)/.test(origin) || origin === process.env.CORS_ORIGIN) {
+      const allowedOrigins = process.env.CORS_ORIGIN
+        ? process.env.CORS_ORIGIN.split(",").map((s) => s.trim())
+        : [];
+      if (
+        !origin ||
+        process.env.NODE_ENV !== "production" ||
+        /http:\/\/localhost:(3000|3001|3002|3003)/.test(origin) ||
+        allowedOrigins.includes("*") ||
+        allowedOrigins.includes(origin)
+      ) {
         cb(null, true);
         return;
       }

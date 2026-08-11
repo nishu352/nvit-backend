@@ -1,10 +1,17 @@
 import { prisma } from "../src/config/prisma.js";
 import { normalizeCompanyName } from "../src/utils/normalize.js";
 
+interface CompanyRecord {
+  id: string;
+  name: string;
+  normalizedName: string | null;
+  cin: string | null;
+}
+
 async function mergeDuplicateCompanies() {
   console.log("🔍 Fetching all company records from database...");
 
-  const allCompanies = await prisma.company.findMany({
+  const allCompanies: CompanyRecord[] = await prisma.company.findMany({
     select: {
       id: true,
       name: true,
@@ -16,14 +23,13 @@ async function mergeDuplicateCompanies() {
   console.log(`Total companies indexed in DB: ${allCompanies.length}`);
 
   // Group by new canonical normalizedName
-  const grouped = new Map<string, typeof allCompanies>();
+  const grouped = new Map<string, CompanyRecord[]>();
 
   for (const comp of allCompanies) {
     const newNorm = normalizeCompanyName(comp.name);
     if (!newNorm) continue;
 
     if (!grouped.has(newNorm)) {
-      grouped.clear ? null : null;
       grouped.set(newNorm, [comp]);
     } else {
       grouped.get(newNorm)!.push(comp);
@@ -49,11 +55,11 @@ async function mergeDuplicateCompanies() {
 
     mergedGroupCount++;
     console.log(`\nFound Duplicate Group #${mergedGroupCount} for normalized name "${newNorm}":`);
-    group.forEach((g) => console.log(` - ID: ${g.id} | Name: "${g.name}"`));
+    group.forEach((g: CompanyRecord) => console.log(` - ID: ${g.id} | Name: "${g.name}"`));
 
     // Choose primary (prefer one with CIN or first in array)
-    const primary = group.find((g) => !!g.cin) || group[0];
-    const secondaries = group.filter((g) => g.id !== primary.id);
+    const primary = group.find((g: CompanyRecord) => !!g.cin) || group[0];
+    const secondaries = group.filter((g: CompanyRecord) => g.id !== primary.id);
 
     for (const sec of secondaries) {
       // Get all categories of secondary
