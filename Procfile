@@ -1,1 +1,1 @@
-web: npx prisma migrate deploy && node dist/app.js
+web: npx prisma db push && node dist/app.js
