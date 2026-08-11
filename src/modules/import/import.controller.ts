@@ -7,6 +7,7 @@ import {
   getImportStatus,
   getImportErrors,
   ConfirmedMapping,
+  forceSyncErrors,
 } from "./import.service.js";
 
 // ─── LEGACY: Single-shot upload (backward compat) ─────────────────────────────
@@ -99,7 +100,15 @@ export async function analyzeHandler(request: FastifyRequest, reply: FastifyRepl
   }
 
   try {
-    const result = await analyzeUploadedFile(buffer, fileName, buffer.length);
+    const url = new URL(request.url, `http://${request.headers.host}`);
+    const queryEntityType = url.searchParams.get("entityType");
+    
+    const entityTypeField = data.fields?.entityType as any;
+    const entityType = (queryEntityType || entityTypeField?.value || (request.query as any)?.entityType || "COMPANY").toUpperCase();
+    console.log("DEBUG: analyzeHandler resolved entityType =", entityType);
+    
+    const result = await analyzeUploadedFile(buffer, fileName, buffer.length, entityType);
+    console.log("DEBUG: analyzeResult mapped pincode =", result.aiMapping.mapping.pincode, "valid:", result.validRows, "invalid:", result.invalidRows);
 
     return reply.status(200).send({
       success: true,
@@ -119,17 +128,34 @@ export async function confirmHandler(request: FastifyRequest, reply: FastifyRepl
     sessionId?: string;
     bankId?: string;
     importType?: string;
+    entityType?: string;
     confirmedMapping?: ConfirmedMapping;
   };
 
-  const { sessionId, bankId, importType, confirmedMapping } = body;
+  const { sessionId, bankId, importType, entityType, confirmedMapping } = body;
 
   if (!sessionId) return reply.status(400).send({ error: true, message: "sessionId is required." });
   if (!bankId) return reply.status(400).send({ error: true, message: "bankId is required." });
-  if (!confirmedMapping?.company_name) {
+  const resolvedEntity = (entityType || "COMPANY").toUpperCase();
+
+  if (!confirmedMapping) {
+    return reply.status(400).send({
+      error: true,
+      message: "Missing confirmedMapping object.",
+    });
+  }
+
+  if (resolvedEntity === "COMPANY" && !confirmedMapping.company_name) {
     return reply.status(400).send({
       error: true,
       message: "A column must be mapped to Company Name before importing.",
+    });
+  }
+  
+  if (resolvedEntity === "PINCODE" && !confirmedMapping.pincode) {
+    return reply.status(400).send({
+      error: true,
+      message: "A column must be mapped to Pincode before importing.",
     });
   }
 
@@ -146,6 +172,7 @@ export async function confirmHandler(request: FastifyRequest, reply: FastifyRepl
       sessionId,
       bankId,
       resolvedImportType as "REPLACE" | "MERGE",
+      resolvedEntity as "COMPANY" | "PINCODE",
       confirmedMapping,
       authUser.id
     );
@@ -214,6 +241,29 @@ export async function getImportErrorsHandler(request: FastifyRequest, reply: Fas
     return reply.status(500).send({
       error: true,
       message: "Failed to fetch import errors", // Never expose raw stack trace
+    });
+  }
+}
+
+// ─── Force Sync Failed Records ────────────────────────────────────────────────
+
+export async function forceSyncHandler(request: FastifyRequest, reply: FastifyReply) {
+  const { historyId } = request.params as { historyId: string };
+  const { errorIds, forceSyncAll, filterCode } = request.body as { errorIds?: string[]; forceSyncAll?: boolean; filterCode?: string };
+
+  if (!forceSyncAll && (!errorIds || !Array.isArray(errorIds) || errorIds.length === 0)) {
+    return reply.status(400).send({ error: true, message: "Please provide an array of errorIds to force sync, or set forceSyncAll." });
+  }
+
+  const authUser = request.user as { id: string };
+
+  try {
+    const result = await forceSyncErrors(historyId, errorIds || [], authUser.id, forceSyncAll, filterCode);
+    return reply.send({ success: true, data: result });
+  } catch (err: any) {
+    return reply.status(500).send({
+      error: true,
+      message: err.message || "Failed to force sync records.",
     });
   }
 }

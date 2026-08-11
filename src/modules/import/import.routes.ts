@@ -6,6 +6,7 @@ import {
   importStatusHandler,
   getImportHistoryHandler,
   getImportErrorsHandler,
+  forceSyncHandler,
 } from "./import.controller.js";
 import { authenticate, authorizeRoles } from "../../middleware/auth.js";
 
@@ -43,12 +44,18 @@ export async function importRoutes(app: FastifyInstance) {
     getImportHistoryHandler
   );
 
-  // ── Row-level import errors (paginated, filterable by errorCode) ───────────
   // GET /import/:historyId/errors?page=1&limit=50&errorCode=DUPLICATE
   app.get(
     "/api/v1/import/:historyId/errors",
     { preHandler: [authenticate, authorizeRoles(...IMPORT_ROLES)] },
     getImportErrorsHandler
+  );
+
+  // ── Force Sync Failed/Skipped Records ───────────────────────────────────────
+  app.post(
+    "/api/v1/import/:historyId/force-sync",
+    { preHandler: [authenticate, authorizeRoles(...IMPORT_ROLES)] },
+    forceSyncHandler
   );
 
   // ── Legacy single-shot upload (backward compatibility) ────────────────────

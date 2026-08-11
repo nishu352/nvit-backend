@@ -244,6 +244,7 @@ model ImportError {
   errorCode     String        // MISSING_NAME | DUPLICATE | INVALID_CATEGORY | etc.
   errorMessage  String
   rawData       String?       // Sanitized representation of the offending row
+  rawJson       Json?         // Original row payload for force sync
   createdAt     DateTime      @default(now())
 
   importJob     ImportHistory @relation(fields: [importJobId], references: [id], onDelete: Cascade)

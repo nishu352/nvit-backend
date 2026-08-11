@@ -10,11 +10,18 @@ import { normalizeCompanyName } from "../../utils/normalize.js";
 // ─── Types ───────────────────────────────────────────────────────────────────
 
 export interface ConfirmedMapping {
-  company_name: string;
-  category: string;
-  status: string;
-  cin: string;
-  remarks: string;
+  company_name?: string;
+  category?: string;
+  status?: string;
+  cin?: string;
+  remarks?: string;
+  pincode?: string;
+  state?: string;
+  city?: string;
+  area?: string;
+  serviceable?: string;
+  negative?: string;
+  [key: string]: string | undefined;
 }
 
 export interface ImportProgressUpdate {
@@ -200,13 +207,14 @@ export async function processBankExcelImport(
 export async function analyzeUploadedFile(
   fileBuffer: Buffer,
   fileName: string,
-  fileSize: number
+  fileSize: number,
+  entityType: string = "COMPANY"
 ) {
   // Analyze file structure and get schema + raw rows
   const { schema, rawRows, inFileDuplicates } = analyzeFileBuffer(fileBuffer, fileName);
 
   // Get AI mapping (with automatic fallback)
-  const aiMapping = await getAiMapping(schema);
+  const aiMapping = await getAiMapping(schema, entityType);
 
   // Create session — stores raw rows server-side
   const sessionId = createSession({
@@ -219,23 +227,37 @@ export async function analyzeUploadedFile(
   });
 
   // Compute validation preview stats
-  const companyNameCol = aiMapping.mapping.company_name;
   let validRows = 0;
   let invalidRows = 0;
   const seenNorm = new Set<string>();
   let fileDuplicates = 0;
 
-  for (const row of rawRows) {
-    const name = companyNameCol ? (row[companyNameCol] || "").trim() : "";
-    if (!name || name.length < 2) {
-      invalidRows++;
-      continue;
+  if (entityType === "PINCODE") {
+    const pincodeCol = aiMapping.mapping.pincode;
+    for (const row of rawRows) {
+      const pin = pincodeCol ? (row[pincodeCol] || "").trim() : "";
+      if (!pin || pin.length < 3) {
+        invalidRows++;
+        continue;
+      }
+      if (seenNorm.has(pin)) { fileDuplicates++; }
+      else { seenNorm.add(pin); }
+      validRows++;
     }
-    const norm = name.toUpperCase().replace(/[^A-Z0-9]/g, "");
-    if (!norm) { invalidRows++; continue; }
-    if (seenNorm.has(norm)) { fileDuplicates++; }
-    else { seenNorm.add(norm); }
-    validRows++;
+  } else {
+    const companyNameCol = aiMapping.mapping.company_name;
+    for (const row of rawRows) {
+      const name = companyNameCol ? (row[companyNameCol] || "").trim() : "";
+      if (!name || name.length < 2) {
+        invalidRows++;
+        continue;
+      }
+      const norm = name.toUpperCase().replace(/[^A-Z0-9]/g, "");
+      if (!norm) { invalidRows++; continue; }
+      if (seenNorm.has(norm)) { fileDuplicates++; }
+      else { seenNorm.add(norm); }
+      validRows++;
+    }
   }
 
   return {
@@ -256,6 +278,7 @@ export async function startConfirmedImport(
   sessionId: string,
   bankId: string,
   importType: "REPLACE" | "MERGE",
+  entityType: "COMPANY" | "PINCODE",
   confirmedMapping: ConfirmedMapping,
   userId: string
 ): Promise<{ historyId: string; totalRecords: number }> {
@@ -287,27 +310,23 @@ export async function startConfirmedImport(
   });
 
   // ── Fire-and-forget background processing ──────────────────────────────────
-  processConfirmedImportBackground(
-    sessionId,
-    session.rawRows,
-    bankId,
-    bank.name,
-    importType,
-    confirmedMapping,
-    userId,
-    history.id,
-    session.fileName
-  ).catch(async (err: any) => {
-    console.error(`[Import ${history.id}] Background processing failed:`, err.message);
-    await prisma.importHistory.update({
-      where: { id: history.id },
-      data: {
-        status: "FAILED",
-        errorMessage: err.message || "Unexpected import error",
-      },
+  if (entityType === "PINCODE") {
+    processPincodeImportBackground(
+      sessionId, session.rawRows, bankId, bank.name, importType, confirmedMapping, userId, history.id, session.fileName
+    ).catch(async (err: any) => {
+      console.error(`[Import ${history.id}] Background processing failed:`, err.message);
+      await prisma.importHistory.update({ where: { id: history.id }, data: { status: "FAILED", errorMessage: err.message || "Unexpected import error" } });
+      deleteSession(sessionId);
     });
-    deleteSession(sessionId);
-  });
+  } else {
+    processConfirmedImportBackground(
+      sessionId, session.rawRows, bankId, bank.name, importType, confirmedMapping, userId, history.id, session.fileName
+    ).catch(async (err: any) => {
+      console.error(`[Import ${history.id}] Background processing failed:`, err.message);
+      await prisma.importHistory.update({ where: { id: history.id }, data: { status: "FAILED", errorMessage: err.message || "Unexpected import error" } });
+      deleteSession(sessionId);
+    });
+  }
 
   return { historyId: history.id, totalRecords: session.rawRows.length };
 }
@@ -333,6 +352,7 @@ async function processConfirmedImportBackground(
     errorCode: string;
     errorMessage: string;
     rawData?: string;
+    rawJson?: any;
   }[] = [];
 
   function captureError(
@@ -340,7 +360,8 @@ async function processConfirmedImportBackground(
     errorCode: string,
     errorMessage: string,
     rawData?: string,
-    columnName?: string
+    columnName?: string,
+    rawJson?: any
   ) {
     if (errorBuffer.length >= 1000) return; // Cap at 1,000 errors max to prevent DB overload
     errorBuffer.push({
@@ -350,6 +371,7 @@ async function processConfirmedImportBackground(
       errorCode,
       errorMessage,
       rawData: rawData ? rawData.substring(0, 500) : undefined,
+      rawJson,
     });
   }
 
@@ -387,6 +409,7 @@ async function processConfirmedImportBackground(
       category: string;
       status: string;
       remarks: string | null;
+      raw: Record<string, string>;
     }[] = [];
 
     let invalidCount = 0;
@@ -411,7 +434,8 @@ async function processConfirmedImportBackground(
           "MISSING_NAME",
           rawName ? `Company name too short ("${rawName.substring(0, 40)}")` : "Company name column is empty",
           mapping.company_name ? `${mapping.company_name}: "${rawName.substring(0, 80)}"` : undefined,
-          mapping.company_name || undefined
+          mapping.company_name || undefined,
+          row
         );
         continue;
       }
@@ -420,7 +444,7 @@ async function processConfirmedImportBackground(
       const norm = normalizeCompanyName(rawName);
       if (!norm) {
         invalidCount++;
-        captureError(rowNum, "INVALID_NAME", `Company name contains only special characters: "${rawName.substring(0, 80)}"`, rawName.substring(0, 200));
+        captureError(rowNum, "INVALID_NAME", `Company name contains only special characters: "${rawName.substring(0, 80)}"`, rawName.substring(0, 200), undefined, row);
         continue;
       }
 
@@ -460,6 +484,7 @@ async function processConfirmedImportBackground(
         category,
         status,
         remarks: rawRemarks ? rawRemarks.substring(0, 1000) : null,
+        raw: row
       });
 
       // Update progress every 5,000 rows during validation
@@ -495,7 +520,7 @@ async function processConfirmedImportBackground(
         const errMsg = `Database error saving companies (batch ${Math.floor(i / CHUNK) + 1})`;
         console.error(`[Import ${historyId}] Company chunk ${Math.floor(i / CHUNK) + 1} failed:`, err.message);
         chunk.forEach((r, ri) =>
-          captureError(i + ri + 2, "CHUNK_FAILED", errMsg, r.name.substring(0, 200))
+          captureError(i + ri + 2, "CHUNK_FAILED", errMsg, r.name.substring(0, 200), undefined, r.raw)
         );
         failedCount += chunk.length;
       }
@@ -522,12 +547,13 @@ async function processConfirmedImportBackground(
       category: string;
       status: string;
       remarks: string | null;
+      raw: Record<string, string>;
     }[] = [];
 
     for (const r of validRows) {
       const companyId = companyMap.get(r.normalizedName);
       if (!companyId) continue;
-      categoryRows.push({ id: randomUUID(), companyId, bankId, category: r.category, status: r.status, remarks: r.remarks });
+      categoryRows.push({ id: randomUUID(), companyId, bankId, category: r.category, status: r.status, remarks: r.remarks, raw: r.raw });
     }
 
     for (let i = 0; i < categoryRows.length; i += CHUNK) {
@@ -549,7 +575,7 @@ async function processConfirmedImportBackground(
         const errMsg = `Database error saving category mappings (batch ${Math.floor(i / CHUNK) + 1})`;
         console.error(`[Import ${historyId}] Category chunk ${Math.floor(i / CHUNK) + 1} failed:`, err.message);
         chunk.forEach((r, ri) =>
-          captureError(i + ri + 2, "CHUNK_FAILED", errMsg, `companyId: ${r.companyId}`)
+          captureError(i + ri + 2, "CHUNK_FAILED", errMsg, `companyId: ${r.companyId}`, undefined, r.raw)
         );
         failedCount += chunk.length;
       }
@@ -731,14 +757,25 @@ function countValidRows(
 ): { validRowCount: number } {
   const seen = new Set<string>();
   let validRowCount = 0;
-  for (const row of rawRows) {
-    const name = mapping.company_name ? (row[mapping.company_name] || "").trim() : "";
-    if (!name || name.length < 2) continue;
-    const norm = name.toUpperCase().replace(/[^A-Z0-9]/g, "");
-    if (!norm || seen.has(norm)) continue;
-    seen.add(norm);
-    validRowCount++;
+
+  if (mapping.pincode) {
+    for (const row of rawRows) {
+      const pin = (row[mapping.pincode] || "").trim();
+      if (!pin || pin.length < 3 || seen.has(pin)) continue;
+      seen.add(pin);
+      validRowCount++;
+    }
+  } else {
+    for (const row of rawRows) {
+      const name = mapping.company_name ? (row[mapping.company_name] || "").trim() : "";
+      if (!name || name.length < 2) continue;
+      const norm = name.toUpperCase().replace(/[^A-Z0-9]/g, "");
+      if (!norm || seen.has(norm)) continue;
+      seen.add(norm);
+      validRowCount++;
+    }
   }
+
   return { validRowCount };
 }
 
@@ -759,3 +796,282 @@ function normalizeCategory(raw: string): string {
 
   return cat; // Preserve custom category values
 }
+
+// ─── Pincode Background Processor ──────────────────────────────────────────────
+
+async function processPincodeImportBackground(
+  sessionId: string,
+  rawRows: Record<string, string>[],
+  bankId: string,
+  bankName: string,
+  importType: "REPLACE" | "MERGE",
+  mapping: ConfirmedMapping,
+  userId: string,
+  historyId: string,
+  fileName: string
+) {
+  const errorBuffer: any[] = [];
+  function captureError(rowNum: number, errorCode: string, errorMessage: string, rawData?: string, columnName?: string, rawJson?: any) {
+    if (errorBuffer.length >= 1000) return;
+    errorBuffer.push({ importJobId: historyId, rowNumber: rowNum, columnName, errorCode, errorMessage, rawData: rawData?.substring(0, 500), rawJson });
+  }
+
+  async function flushErrors() {
+    if (errorBuffer.length === 0) return;
+    try {
+      await prisma.importError.createMany({ data: errorBuffer, skipDuplicates: true });
+    } catch (e) {
+      console.error(`[Import ${historyId}] Error flush failed:`, e);
+    }
+  }
+
+  try {
+    const now = new Date().toISOString();
+
+    if (importType === "REPLACE") {
+      await prisma.pincodeServiceability.deleteMany({ where: { bankId } });
+    }
+
+    const seen = new Set<string>();
+    const validRows: any[] = [];
+    let invalidCount = 0;
+    let skippedCount = 0;
+
+    for (let rowIdx = 0; rowIdx < rawRows.length; rowIdx++) {
+      const row = rawRows[rowIdx];
+      const rowNum = rowIdx + 2;
+
+      const rawPin = mapping.pincode ? (row[mapping.pincode] || "").trim() : "";
+      if (!rawPin || rawPin.length < 3) {
+        invalidCount++;
+        captureError(rowNum, "INVALID_PINCODE", "Pincode is missing or too short", rawPin, mapping.pincode, row);
+        continue;
+      }
+
+      if (seen.has(rawPin)) {
+        skippedCount++;
+        continue; // Simple deduplication for now
+      }
+      seen.add(rawPin);
+
+      // Parse booleans and other fields safely
+      const rawState = mapping.state ? (row[mapping.state] || "").trim().substring(0, 50) : null;
+      const rawCity = mapping.city ? (row[mapping.city] || "").trim().substring(0, 50) : null;
+      const rawArea = mapping.area ? (row[mapping.area] || "").trim().substring(0, 100) : null;
+      const rawCat = mapping.category ? (row[mapping.category] || "").trim().toUpperCase() : null;
+      
+      const servStr = mapping.serviceable ? (row[mapping.serviceable] || "").trim().toLowerCase() : "";
+      const isServiceable = servStr === "yes" || servStr === "true" || servStr === "1" || servStr === "active" || servStr === "y";
+      
+      const negStr = mapping.negative ? (row[mapping.negative] || "").trim().toLowerCase() : "";
+      const isNegative = negStr === "yes" || negStr === "true" || negStr === "1" || negStr === "y" || negStr === "negative";
+
+      validRows.push({
+        id: randomUUID(),
+        bankId,
+        pincode: rawPin,
+        state: rawState,
+        city: rawCity,
+        area: rawArea,
+        isServiceable: mapping.serviceable ? isServiceable : true,
+        isNegative: mapping.negative ? isNegative : false,
+        category: rawCat || "REGULAR"
+      });
+    }
+
+    let processedCount = 0;
+    let failedCount = 0;
+
+    const CHUNK = 500;
+    for (let i = 0; i < validRows.length; i += CHUNK) {
+      const chunk = validRows.slice(i, i + CHUNK);
+      try {
+        const placeholders = chunk.map((r, idx) => `($${idx * 9 + 1},$${idx * 9 + 2},$${idx * 9 + 3},$${idx * 9 + 4},$${idx * 9 + 5},$${idx * 9 + 6},$${idx * 9 + 7},$${idx * 9 + 8},$${idx * 9 + 9})`).join(",");
+        const values = chunk.flatMap(r => [r.id, r.bankId, r.pincode, r.state, r.city, r.area, r.isServiceable, r.isNegative, r.category]);
+        
+        await prisma.$executeRawUnsafe(`
+          INSERT INTO "pincode_serviceabilities" ("id", "bankId", "pincode", "state", "city", "area", "isServiceable", "isNegative", "category")
+          VALUES ${placeholders}
+          ON CONFLICT ("bankId", "pincode") DO UPDATE SET
+            "state" = EXCLUDED."state",
+            "city" = EXCLUDED."city",
+            "area" = EXCLUDED."area",
+            "isServiceable" = EXCLUDED."isServiceable",
+            "isNegative" = EXCLUDED."isNegative",
+            "category" = EXCLUDED."category",
+            "updatedAt" = '${now}'
+        `, ...values);
+        
+        processedCount += chunk.length;
+      } catch (err: any) {
+        console.error(`[Import ${historyId}] Batch failed (Rows ${i}-${i + chunk.length}):`, err.message);
+        failedCount += chunk.length;
+      }
+    }
+
+    await flushErrors();
+
+    await prisma.importHistory.update({
+      where: { id: historyId },
+      data: { status: "COMPLETED", processedRecords: processedCount, failedRecords: failedCount, skippedRecords: skippedCount }
+    });
+
+    await createAuditLog({
+      userId, action: "EXCEL_IMPORTED", entity: "Bank", entityId: bankId,
+      details: { fileName, importType: "PINCODE", totalRecords: rawRows.length, processedCount, failedCount, bankName }
+    });
+
+  } catch (err: any) {
+    console.error(`[Import ${historyId}] Fatal Error:`, err);
+    await flushErrors();
+    await prisma.importHistory.update({
+      where: { id: historyId },
+      data: { status: "FAILED", errorMessage: err.message || "Import failed" }
+    });
+  }
+}
+
+// ─── Force Sync ─────────────────────────────────────────────────────────────
+
+export async function forceSyncErrors(historyId: string, errorIds: string[], userId: string, forceSyncAll?: boolean, filterCode?: string) {
+  const whereClause: any = { importJobId: historyId };
+  if (!forceSyncAll) {
+    whereClause.id = { in: errorIds };
+  } else if (filterCode) {
+    whereClause.errorCode = filterCode;
+  }
+
+  const history = await prisma.importHistory.findUnique({
+    where: { id: historyId },
+    include: { importErrors: { where: whereClause } }
+  });
+
+  if (!history) throw new Error("Import history not found");
+  if (!history.mappingJson) throw new Error("No mapping config found for this import");
+
+  const mapping = JSON.parse(history.mappingJson) as ConfirmedMapping;
+  const isPincode = !!mapping.pincode;
+
+  const validRows: any[] = [];
+  const errorsToResolve: string[] = [];
+  const now = new Date().toISOString();
+
+  for (const err of history.importErrors) {
+    if (!err.rawJson) continue;
+    const row = err.rawJson as Record<string, string>;
+    
+    if (isPincode) {
+      const rawPin = mapping.pincode ? (row[mapping.pincode] || "").trim() : "";
+      if (!rawPin || rawPin.length < 3) continue; // Can't force if no pincode exists
+
+      const rawState = mapping.state ? (row[mapping.state] || "").trim().substring(0, 50) : null;
+      const rawCity = mapping.city ? (row[mapping.city] || "").trim().substring(0, 50) : null;
+      const rawArea = mapping.area ? (row[mapping.area] || "").trim().substring(0, 100) : null;
+      const rawCat = mapping.category ? (row[mapping.category] || "").trim().toUpperCase() : null;
+      
+      const servStr = mapping.serviceable ? (row[mapping.serviceable] || "").trim().toLowerCase() : "";
+      const isServiceable = servStr === "yes" || servStr === "true" || servStr === "1" || servStr === "active" || servStr === "y";
+      
+      const negStr = mapping.negative ? (row[mapping.negative] || "").trim().toLowerCase() : "";
+      const isNegative = negStr === "yes" || negStr === "true" || negStr === "1" || negStr === "y" || negStr === "negative";
+
+      validRows.push({
+        id: randomUUID(),
+        bankId: history.bankId,
+        pincode: rawPin,
+        state: rawState,
+        city: rawCity,
+        area: rawArea,
+        isServiceable: mapping.serviceable ? isServiceable : true,
+        isNegative: mapping.negative ? isNegative : false,
+        category: rawCat || "REGULAR"
+      });
+      errorsToResolve.push(err.id);
+
+    } else {
+      let rawName = mapping.company_name ? (row[mapping.company_name] || "").trim() : "";
+      
+      // If user is forcing it, and it has no name, we might give it a placeholder or skip
+      if (!rawName || rawName.length < 2) {
+        rawName = `UNKNOWN_${err.rowNumber}`;
+      }
+      
+      const norm = normalizeCompanyName(rawName);
+      if (!norm) continue; // Unsalvageable
+
+      const rawCategory = mapping.category ? (row[mapping.category] || "").trim() : "";
+      const rawStatus = mapping.status ? (row[mapping.status] || "").trim() : "";
+      const rawCin = mapping.cin ? (row[mapping.cin] || "").trim() : "";
+      const rawRemarks = mapping.remarks ? (row[mapping.remarks] || "").trim() : "";
+
+      validRows.push({
+        rawName,
+        norm,
+        category: normalizeCategory(rawCategory),
+        status: rawStatus ? rawStatus.substring(0, 50) : "OPEN",
+        cin: rawCin ? rawCin.substring(0, 100) : null,
+        remarks: rawRemarks ? rawRemarks.substring(0, 1000) : null
+      });
+      errorsToResolve.push(err.id);
+    }
+  }
+
+  let processedCount = 0;
+
+  if (isPincode) {
+    const CHUNK = 500;
+    for (let i = 0; i < validRows.length; i += CHUNK) {
+      const chunk = validRows.slice(i, i + CHUNK);
+      const placeholders = chunk.map((r, idx) => `($${idx * 9 + 1},$${idx * 9 + 2},$${idx * 9 + 3},$${idx * 9 + 4},$${idx * 9 + 5},$${idx * 9 + 6},$${idx * 9 + 7},$${idx * 9 + 8},$${idx * 9 + 9})`).join(",");
+      const values = chunk.flatMap(r => [r.id, r.bankId, r.pincode, r.state, r.city, r.area, r.isServiceable, r.isNegative, r.category]);
+      
+      await prisma.$executeRawUnsafe(`
+        INSERT INTO "PincodeServiceability" ("id", "bankId", "pincode", "state", "city", "area", "isServiceable", "isNegative", "category")
+        VALUES ${placeholders}
+        ON CONFLICT ("bankId", "pincode") DO UPDATE SET
+          "state" = EXCLUDED."state",
+          "city" = EXCLUDED."city",
+          "area" = EXCLUDED."area",
+          "isServiceable" = EXCLUDED."isServiceable",
+          "isNegative" = EXCLUDED."isNegative",
+          "category" = EXCLUDED."category",
+          "updatedAt" = '${now}'
+      `, ...values);
+      processedCount += chunk.length;
+    }
+  } else {
+    // Process companies
+    for (const r of validRows) {
+      const company = await prisma.company.upsert({
+        where: { normalizedName: r.norm },
+        create: { name: r.rawName, normalizedName: r.norm },
+        update: {},
+      });
+      
+      await prisma.companyBankCategory.upsert({
+        where: { companyId_bankId: { companyId: company.id, bankId: history.bankId } },
+        create: { id: randomUUID(), companyId: company.id, bankId: history.bankId, category: r.category, status: r.status, remarks: r.remarks },
+        update: { category: r.category, status: r.status, remarks: r.remarks, updatedAt: new Date() }
+      });
+      processedCount++;
+    }
+  }
+
+  // Remove resolved errors and update stats
+  if (errorsToResolve.length > 0) {
+    await prisma.importError.deleteMany({
+      where: { id: { in: errorsToResolve } }
+    });
+    
+    await prisma.importHistory.update({
+      where: { id: historyId },
+      data: {
+        processedRecords: { increment: processedCount },
+        failedRecords: { decrement: errorsToResolve.length }
+      }
+    });
+  }
+
+  return { forceSynced: processedCount };
+}
+

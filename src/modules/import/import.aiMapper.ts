@@ -63,14 +63,61 @@ const TARGET_FIELDS = [
   },
 ] as const;
 
+const PINCODE_TARGET_FIELDS = [
+  {
+    key: "pincode",
+    label: "Pincode",
+    required: true,
+    aliases: ["pincode", "pin code", "zip", "zip code", "postal code", "postal"],
+  },
+  {
+    key: "state",
+    label: "State",
+    required: false,
+    aliases: ["state", "province", "region"],
+  },
+  {
+    key: "city",
+    label: "City",
+    required: false,
+    aliases: ["city", "district", "town"],
+  },
+  {
+    key: "area",
+    label: "Area / Region",
+    required: false,
+    aliases: ["area", "location", "locality", "taluka", "zone"],
+  },
+  {
+    key: "serviceable",
+    label: "Is Serviceable",
+    required: false,
+    aliases: ["serviceable", "is serviceable", "status", "active", "deliverable", "sourcing"],
+  },
+  {
+    key: "negative",
+    label: "Is Negative",
+    required: false,
+    aliases: ["negative", "is negative", "blacklisted", "rejected", "banned", "negative area"],
+  },
+  {
+    key: "category",
+    label: "Category",
+    required: false,
+    aliases: ["category", "cat", "tier", "classification"],
+  },
+] as const;
+
 // ─── Rule-Based Fallback Mapper ───────────────────────────────────────────────
 
-function ruleBasedMapper(schema: FileSchema): AiMappingResult {
+function ruleBasedMapper(schema: FileSchema, importType: string = "MERGE"): AiMappingResult {
   const mapping: Record<string, string> = {};
   const confidence: Record<string, number> = {};
   const warnings: string[] = [];
 
-  for (const field of TARGET_FIELDS) {
+  const targetFields = importType === "PINCODE" ? PINCODE_TARGET_FIELDS : TARGET_FIELDS;
+
+  for (const field of targetFields) {
     let bestMatch = "";
     let bestScore = 0;
 
@@ -121,12 +168,12 @@ function ruleBasedMapper(schema: FileSchema): AiMappingResult {
 
 // ─── AI Mapper (Gemini Flash) ─────────────────────────────────────────────────
 
-export async function getAiMapping(schema: FileSchema): Promise<AiMappingResult> {
+export async function getAiMapping(schema: FileSchema, importType: string = "MERGE"): Promise<AiMappingResult> {
   const apiKey = process.env.GEMINI_API_KEY;
 
   if (!apiKey) {
     console.log("[AiMapper] No GEMINI_API_KEY set — using rule-based fallback mapper");
-    const result = ruleBasedMapper(schema);
+    const result = ruleBasedMapper(schema, importType);
     result.warnings.unshift(
       "AI column analysis unavailable (API key not configured). Rule-based mapping was used."
     );
@@ -142,9 +189,14 @@ export async function getAiMapping(schema: FileSchema): Promise<AiMappingResult>
       samples: col.sampleValues.slice(0, 3),
     }));
 
-    const targetFieldDefs = TARGET_FIELDS.map(
+    const targetFields = importType === "PINCODE" ? PINCODE_TARGET_FIELDS : TARGET_FIELDS;
+    
+    const targetFieldDefs = targetFields.map(
       (f) => `- ${f.key} (${f.required ? "REQUIRED" : "optional"}): ${f.label}`
     ).join("\n");
+
+    const jsonMappingFields = targetFields.map(f => `    "${f.key}": ""`).join(",\n");
+    const jsonConfidenceFields = targetFields.map(f => `    "${f.key}": 0`).join(",\n");
 
     const prompt = `You are a senior data schema analyst for a financial technology company called FINOLINK. Your only task is to analyze a spreadsheet's column structure and map columns to FINOLINK's import target fields.
 
@@ -165,18 +217,10 @@ INSTRUCTIONS:
 Respond with ONLY this exact JSON structure (no other text):
 {
   "mapping": {
-    "company_name": "",
-    "category": "",
-    "status": "",
-    "cin": "",
-    "remarks": ""
+${jsonMappingFields}
   },
   "confidence": {
-    "company_name": 0,
-    "category": 0,
-    "status": 0,
-    "cin": 0,
-    "remarks": 0
+${jsonConfidenceFields}
   },
   "warnings": []
 }`;
@@ -205,8 +249,9 @@ Respond with ONLY this exact JSON structure (no other text):
       throw new Error(`Gemini API returned HTTP ${response.status}: ${response.statusText}`);
     }
 
-    const data = (await response.json()) as any;
-    const rawText: string = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+    const responseData = await response.json();
+    const rawText = responseData.candidates[0].content.parts[0].text;
+    console.log("DEBUG getAiMapping: Gemini Raw Response=", rawText);
 
     // Extract JSON — be defensive with markdown code blocks
     const jsonMatch = rawText.match(/\{[\s\S]*\}/);
@@ -227,7 +272,7 @@ Respond with ONLY this exact JSON structure (no other text):
     const validatedMapping: Record<string, string> = {};
     const validatedConfidence: Record<string, number> = {};
 
-    for (const field of TARGET_FIELDS) {
+    for (const field of targetFields) {
       const mapped = parsed.mapping[field.key] ?? "";
       const conf = parsed.confidence[field.key] ?? 0;
 
@@ -257,7 +302,7 @@ Respond with ONLY this exact JSON structure (no other text):
     };
   } catch (err: any) {
     console.error("[AiMapper] AI mapping failed, falling back to rule-based:", err.message);
-    const result = ruleBasedMapper(schema);
+    const result = ruleBasedMapper(schema, importType);
     result.warnings.unshift(
       `AI analysis temporarily unavailable (${err.message}). Rule-based mapping was applied instead.`
     );
