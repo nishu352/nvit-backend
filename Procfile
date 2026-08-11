@@ -1,1 +1,1 @@
-web: npx prisma db push && node dist/app.js
+web: node dist/app.js
