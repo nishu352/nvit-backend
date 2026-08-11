@@ -109,35 +109,33 @@ export async function buildApp() {
 
 if (process.env.NODE_ENV !== "test") {
   buildApp()
-    .then(async (app) => {
-      await app.ready();
-
-      // ── On every startup: resolve any imports stuck in PROCESSING state ──────
-      // This happens when tsx watch restarts mid-import (in-memory session is lost)
-      try {
-        const { prisma } = await import("./config/prisma.js");
-        const stuck = await prisma.importHistory.updateMany({
-          where: { status: "PROCESSING" },
-          data: {
-            status: "FAILED",
-            errorMessage: "Import interrupted — server restarted during processing. Please re-upload the file.",
-          },
-        });
-        if (stuck.count > 0) {
-          console.warn(`⚠️  Resolved ${stuck.count} stuck import(s) — marked as FAILED on startup`);
-        }
-      } catch (e: any) {
-        console.warn("Startup import cleanup skipped:", e.message);
-      }
-
-      console.log("=== REGISTERED FASTIFY ROUTES ===");
-      console.log(app.printRoutes());
+    .then((app) => {
       app.listen({ port: PORT, host: HOST }, (err, address) => {
         if (err) {
           app.log.error(err);
           process.exit(1);
         }
         app.log.info(`🚀 Enterprise Backend REST Server listening on ${address}`);
+
+        // Background cleanup — asynchronous & non-blocking for startup
+        import("./config/prisma.js")
+          .then(({ prisma }) =>
+            prisma.importHistory.updateMany({
+              where: { status: "PROCESSING" },
+              data: {
+                status: "FAILED",
+                errorMessage: "Import interrupted — server restarted during processing. Please re-upload the file.",
+              },
+            })
+          )
+          .then((stuck) => {
+            if (stuck && stuck.count > 0) {
+              console.warn(`⚠️  Resolved ${stuck.count} stuck import(s) — marked as FAILED on startup`);
+            }
+          })
+          .catch((e) => {
+            console.warn("Startup import cleanup skipped:", e?.message || e);
+          });
       });
     })
     .catch((err) => {
