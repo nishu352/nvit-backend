@@ -16,7 +16,7 @@ import { adminRoutes } from "./modules/admin/admin.routes.js";
 dotenv.config();
 
 const PORT = parseInt(process.env.PORT || "5001", 10);
-const HOST = process.env.HOST || "0.0.0.0";
+const HOST = "0.0.0.0";
 const JWT_SECRET = process.env.JWT_SECRET || "super-secret-enterprise-jwt-key-2026-fintech-platform";
 
 export async function buildApp() {
@@ -76,6 +76,17 @@ export async function buildApp() {
   await app.register(adminRoutes);
 
   // Root & Health Check Endpoints
+  app.get("/", async () => {
+    return {
+      status: "ok",
+      service: "FinVerify Enterprise API Gateway",
+      version: "1.0.0",
+      health: "/health",
+      api: "/api/v1/health",
+      timestamp: new Date().toISOString(),
+    };
+  });
+
   app.get("/health", async () => {
     return {
       status: "ok",
