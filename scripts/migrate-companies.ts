@@ -6,9 +6,9 @@ const prisma = new PrismaClient();
 async function run() {
   console.log("Starting Company Data Migration & Deduplication...");
 
-  // 1. Fetch all companies
+  // 1. Fetch all companies WITHOUT relations to avoid OOM
   const companies = await prisma.company.findMany({
-    include: { bankCategories: true }
+    select: { id: true, name: true, createdAt: true, normalizedName: true, baseName: true }
   });
   console.log(`Found ${companies.length} companies to process.`);
 
@@ -138,8 +138,13 @@ async function mergeDuplicates(canonical: any, duplicates: any[]) {
   for (const dup of duplicates) {
     console.log(`  <- Consuming duplicate: ${dup.name} (${dup.id})`);
     
+    // Fetch BankCategories for this duplicate on the fly
+    const bankCategories = await prisma.companyBankCategory.findMany({
+      where: { companyId: dup.id }
+    });
+
     // Move BankCategories
-    for (const bc of dup.bankCategories) {
+    for (const bc of bankCategories) {
       try {
         await prisma.companyBankCategory.update({
           where: { id: bc.id },
