@@ -19,29 +19,10 @@ function normalizeCategory(raw: string): string {
   if (!raw) return "UNLISTED";
   const cat = raw.trim().toUpperCase();
 
-  // Already in CAT A/B/C format
-  if (cat === "CAT A" || cat === "A") return "CAT A";
-  if (cat === "CAT B" || cat === "B") return "CAT B";
-  if (cat === "CAT C" || cat === "C") return "CAT C";
-
-  // ICICI August 2025 tiers
-  if (cat === "SUPERPRIME" || cat === "SUPER PRIME") return "CAT A";
-  if (cat === "ELITE") return "CAT A";
-  if (cat === "PREFERRED" || cat === "PRIME") return "CAT B";
-  if (cat === "OPEN MARKET" || cat === "OPENMARKET" || cat === "OPEN-MARKET") return "CAT C";
-
-  // Government / Public sector
-  if (cat === "GOVERNMENT" || cat === "GOVT" || cat === "GOV") return "CAT A";
-  if (cat === "PSU" || cat.includes("PUBLIC SECTOR")) return "CAT A";
-  if (cat === "MNC" || cat.includes("MULTI NATIONAL")) return "CAT A";
-
   // Reject categories
   if (cat.includes("REJECT") || cat === "NL" || cat === "NOT LISTED" || cat === "BLACKLIST") return "REJECT";
+  if (cat === "N/A" || cat === "NA" || cat === "") return "UNLISTED";
 
-  // Unlisted
-  if (cat === "UNLISTED" || cat === "N/A" || cat === "NA" || cat === "") return "UNLISTED";
-
-  // Preserve custom/bank-specific category values as-is (uppercased)
   return cat;
 }
 

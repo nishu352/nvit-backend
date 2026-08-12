@@ -458,6 +458,7 @@ async function processConfirmedImportBackground(
           if (rawCin) existingRow.cin = rawCin.substring(0, 100);
           if (rawRemarks) existingRow.remarks = rawRemarks.substring(0, 1000);
         }
+        captureError(rowNum, "DUPLICATE_IN_FILE", `Duplicate company in file, merged automatically.`, norm, undefined, row);
         continue;
       }
       seen.add(norm);
@@ -559,6 +560,22 @@ async function processConfirmedImportBackground(
     for (let i = 0; i < categoryRows.length; i += CHUNK) {
       const chunk = categoryRows.slice(i, i + CHUNK);
       try {
+        // Find existing records to log them as skipped (for MERGE mode)
+        if (importType === "MERGE") {
+          const existingCats = await prisma.companyBankCategory.findMany({
+            where: { bankId, companyId: { in: chunk.map(r => r.companyId) } },
+            select: { companyId: true }
+          });
+          const existingSet = new Set(existingCats.map(c => c.companyId));
+          
+          chunk.forEach((r, ri) => {
+            if (existingSet.has(r.companyId)) {
+              skippedCount++;
+              captureError(i + ri + 2, "SKIPPED_EXISTING", `Company already mapped to this bank (Merge Mode). Skipped.`, `companyId: ${r.companyId}`, undefined, r.raw);
+            }
+          });
+        }
+
         const res = await prisma.companyBankCategory.createMany({
           data: chunk.map((r) => ({
             id: r.id,
@@ -783,18 +800,10 @@ function normalizeCategory(raw: string): string {
   if (!raw) return "UNLISTED";
   const cat = raw.trim().toUpperCase();
 
-  if (cat === "CAT A" || cat === "A") return "CAT A";
-  if (cat === "CAT B" || cat === "B") return "CAT B";
-  if (cat === "CAT C" || cat === "C") return "CAT C";
-  if (cat === "SUPERPRIME" || cat === "SUPER PRIME" || cat === "ELITE") return "CAT A";
-  if (cat === "PREFERRED" || cat === "PRIME") return "CAT B";
-  if (cat === "OPEN MARKET" || cat === "OPENMARKET") return "CAT C";
-  if (cat === "GOVERNMENT" || cat === "GOVT" || cat === "GOV" || cat === "PSU") return "CAT A";
-  if (cat === "MNC" || cat.includes("MULTI NATIONAL") || cat.includes("MULTINATIONAL")) return "CAT A";
   if (cat.includes("REJECT") || cat === "NL" || cat === "NOT LISTED" || cat === "BLACKLIST") return "REJECT";
-  if (cat === "UNLISTED" || cat === "N/A" || cat === "NA" || cat === "") return "UNLISTED";
+  if (cat === "N/A" || cat === "NA" || cat === "") return "UNLISTED";
 
-  return cat; // Preserve custom category values
+  return cat; // Preserve exact category values (e.g., SUPERPRIME, ELITE, OPENMARKET)
 }
 
 // ─── Pincode Background Processor ──────────────────────────────────────────────
