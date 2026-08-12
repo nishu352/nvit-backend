@@ -5,7 +5,13 @@ export async function searchCompanies(query: string, limitNum: number = 25) {
   const cleanQuery = query.trim();
   if (!cleanQuery) return [];
 
-  const normalizedQuery = normalizeCompanyName(cleanQuery);
+  const { normalizedName } = normalizeCompanyName(cleanQuery);
+
+  const matchedAliases = await prisma.companyAlias.findMany({
+    where: { alias: { startsWith: normalizedName } },
+    select: { companyId: true }
+  });
+  const aliasCompanyIds = matchedAliases.map(a => a.companyId);
 
   const [allBanks, rawCompanies] = await Promise.all([
     prisma.bank.findMany({
@@ -23,10 +29,11 @@ export async function searchCompanies(query: string, limitNum: number = 25) {
       where: {
         OR: [
           { name: { startsWith: cleanQuery, mode: "insensitive" } },
-          ...(normalizedQuery ? [{ normalizedName: { startsWith: normalizedQuery } }] : []),
+          ...(normalizedName ? [{ normalizedName: { startsWith: normalizedName } }] : []),
+          ...(aliasCompanyIds.length > 0 ? [{ id: { in: aliasCompanyIds } }] : []),
         ],
       },
-      take: limitNum * 2, // Fetch extra candidate rows for in-memory deduplication & merging
+      take: limitNum,
       include: {
         bankCategories: {
           include: {
@@ -48,38 +55,10 @@ export async function searchCompanies(query: string, limitNum: number = 25) {
     }),
   ]);
 
-  // Group duplicate companies by their canonical normalizedName
-  const groupedMap = new Map<string, any>();
-
-  for (const c of rawCompanies) {
-    const normKey = normalizeCompanyName(c.name) || normalizeCompanyName(c.normalizedName);
-
-    if (!groupedMap.has(normKey)) {
-      groupedMap.set(normKey, {
-        companyId: c.id,
-        companyName: c.name,
-        cin: c.cin,
-        pincode: c.pincode,
-        city: c.city,
-        state: c.state,
-        allCategories: [...(c.bankCategories || [])],
-      });
-    } else {
-      // Merge bank categories into existing canonical group
-      const existingGroup = groupedMap.get(normKey);
-      if (c.cin && !existingGroup.cin) existingGroup.cin = c.cin;
-      existingGroup.allCategories.push(...(c.bankCategories || []));
-    }
-  }
-
-  const mergedCompanies = Array.from(groupedMap.values()).slice(0, limitNum);
-
-  return mergedCompanies.map((c: any) => {
-    // Build map of bankId -> category record
+  return rawCompanies.map((c: any) => {
     const categoryMap = new Map<string, any>();
-    (c.allCategories || []).forEach((bc: any) => {
+    (c.bankCategories || []).forEach((bc: any) => {
       if (bc.bank?.id) {
-        // If bank category isn't set or is UNLISTED, prefer an explicit listed category (CAT A, CAT B, etc.)
         const existing = categoryMap.get(bc.bank.id);
         if (!existing || (existing.category === "UNLISTED" && bc.category !== "UNLISTED")) {
           categoryMap.set(bc.bank.id, bc);
@@ -98,9 +77,8 @@ export async function searchCompanies(query: string, limitNum: number = 25) {
           logoUrl: b.logoUrl,
           category: bc.category || "UNLISTED",
           status: bc.status || "APPROVED",
-          source: bc.source,
-          remarks: bc.remarks || "Specific Bank Policy Index",
-          updatedAt: bc.updatedAt,
+          remarks: bc.remarks || null,
+          rawCompanyName: bc.rawCompanyName || c.name,
         };
       }
 
@@ -112,15 +90,13 @@ export async function searchCompanies(query: string, limitNum: number = 25) {
         logoUrl: b.logoUrl,
         category: "UNLISTED",
         status: "APPROVED",
-        source: "SYSTEM_DEFAULT",
-        remarks: "Unlisted Company (Standard Policy Applies)",
-        updatedAt: null,
+        remarks: null,
       };
     });
 
     return {
-      companyId: c.companyId,
-      companyName: c.companyName,
+      companyId: c.id,
+      companyName: c.name,
       cin: c.cin,
       pincode: c.pincode,
       city: c.city,
@@ -182,13 +158,20 @@ export async function getCompanyAutocomplete(query: string) {
   const cleanQuery = query.trim();
   if (!cleanQuery) return [];
 
-  const normalizedQuery = normalizeCompanyName(cleanQuery);
+  const { normalizedName } = normalizeCompanyName(cleanQuery);
+  
+  const matchedAliases = await prisma.companyAlias.findMany({
+    where: { alias: { startsWith: normalizedName } },
+    select: { companyId: true }
+  });
+  const aliasCompanyIds = matchedAliases.map(a => a.companyId);
 
   const raw = await prisma.company.findMany({
     where: {
       OR: [
         { name: { startsWith: cleanQuery, mode: "insensitive" } },
-        ...(normalizedQuery ? [{ normalizedName: { startsWith: normalizedQuery } }] : []),
+        ...(normalizedName ? [{ normalizedName: { startsWith: normalizedName } }] : []),
+        ...(aliasCompanyIds.length > 0 ? [{ id: { in: aliasCompanyIds } }] : []),
       ],
     },
     select: {
@@ -197,21 +180,9 @@ export async function getCompanyAutocomplete(query: string) {
       city: true,
       state: true,
     },
-    take: 20,
+    take: 10,
     orderBy: { name: "asc" },
   });
 
-  // Deduplicate by normalized name
-  const seenNorm = new Set<string>();
-  const uniqueItems: typeof raw = [];
-
-  for (const item of raw) {
-    const norm = normalizeCompanyName(item.name);
-    if (!seenNorm.has(norm)) {
-      seenNorm.add(norm);
-      uniqueItems.push(item);
-    }
-  }
-
-  return uniqueItems.slice(0, 10);
+  return raw;
 }

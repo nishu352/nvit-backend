@@ -70,6 +70,7 @@ export async function processBankExcelImport(
       id: string;
       name: string;
       normalizedName: string;
+      baseName: string;
       cin: string | null;
       category: string;
       status: string;
@@ -78,13 +79,14 @@ export async function processBankExcelImport(
 
     for (const r of rows) {
       if (!r.companyName || r.companyName.length < 2) continue;
-      const norm = normalizeCompanyName(r.companyName);
+      const { normalizedName: norm, baseName } = normalizeCompanyName(r.companyName);
       if (!norm || seen.has(norm)) continue;
       seen.add(norm);
       validRows.push({
         id: randomUUID(),
         name: r.companyName,
         normalizedName: norm,
+        baseName,
         cin: r.cin || null,
         category: r.category || "UNLISTED",
         status: r.status || "APPROVED",
@@ -405,6 +407,7 @@ async function processConfirmedImportBackground(
       id: string;
       name: string;
       normalizedName: string;
+      baseName: string;
       cin: string | null;
       category: string;
       status: string;
@@ -441,7 +444,7 @@ async function processConfirmedImportBackground(
       }
 
       // Normalize company name
-      const norm = normalizeCompanyName(rawName);
+      const { normalizedName: norm, baseName } = normalizeCompanyName(rawName);
       if (!norm) {
         invalidCount++;
         captureError(rowNum, "INVALID_NAME", `Company name contains only special characters: "${rawName.substring(0, 80)}"`, rawName.substring(0, 200), undefined, row);
@@ -481,6 +484,7 @@ async function processConfirmedImportBackground(
         id: randomUUID(),
         name: rawName.substring(0, 500), // max length
         normalizedName: norm,
+        baseName: baseName,
         cin: rawCin ? rawCin.substring(0, 100) : null,
         category,
         status,
@@ -501,43 +505,105 @@ async function processConfirmedImportBackground(
       }
     }
 
-    // ── Step 2: Bulk INSERT companies (skip existing) ─────────────────────
+    // ── Step 2: Resolve Company IDs via Matching Hierarchy ────────────────
+    const allNormNames = validRows.map((r) => r.normalizedName);
+    const allBaseNames = Array.from(new Set(validRows.map((r) => r.baseName)));
+
+    const existingCompanies = [];
+    for (let i = 0; i < allBaseNames.length; i += 500) {
+      const baseChunk = allBaseNames.slice(i, i + 500);
+      const comps = await prisma.company.findMany({
+        where: { baseName: { in: baseChunk } },
+        select: { id: true, normalizedName: true, baseName: true },
+      });
+      existingCompanies.push(...comps);
+    }
+    
+    const existingAliases = [];
+    for (let i = 0; i < allNormNames.length; i += 500) {
+      const normChunk = allNormNames.slice(i, i + 500);
+      const aliases = await prisma.companyAlias.findMany({
+        where: { alias: { in: normChunk } },
+        select: { companyId: true, alias: true }
+      });
+      existingAliases.push(...aliases);
+    }
+
+    const companyMap = new Map<string, string>(); // validRow.id -> companyId
+    const newCompaniesToCreate = [];
+
+    const baseNameMap = new Map<string, { id: string, normalizedName: string, baseName: string | null }[]>();
+    for (const c of existingCompanies) {
+      if (!c.baseName) continue;
+      const arr = baseNameMap.get(c.baseName) || [];
+      arr.push(c);
+      baseNameMap.set(c.baseName, arr);
+    }
+
+    for (const r of validRows) {
+      let resolvedCompanyId: string | null = null;
+      const candidates = baseNameMap.get(r.baseName) || [];
+
+      // Level 1: Exact Match (normalizedName or Alias)
+      const exactMatch = candidates.find(c => c.normalizedName === r.normalizedName);
+      if (exactMatch) {
+        resolvedCompanyId = exactMatch.id;
+      } else {
+        const aliasMatch = existingAliases.find(a => a.alias === r.normalizedName);
+        if (aliasMatch) {
+          resolvedCompanyId = aliasMatch.companyId;
+        }
+      }
+
+      // Level 2: Missing Suffix Match (baseName)
+      if (!resolvedCompanyId && candidates.length > 0) {
+        const noSuffixCandidates = candidates.filter(c => c.normalizedName === c.baseName);
+        const hasSuffixCandidates = candidates.filter(c => c.normalizedName !== c.baseName);
+
+        const incomingHasNoSuffix = r.normalizedName === r.baseName;
+        
+        if (incomingHasNoSuffix && hasSuffixCandidates.length === 1) {
+          // Incoming: "WIPRO", DB: ["WIPROLTD"] -> Safe merge
+          resolvedCompanyId = hasSuffixCandidates[0].id;
+        } else if (!incomingHasNoSuffix && noSuffixCandidates.length === 1) {
+          // Incoming: "WIPRO LIMITED", DB: ["WIPRO"] -> Safe merge
+          resolvedCompanyId = noSuffixCandidates[0].id;
+        }
+      }
+
+      if (resolvedCompanyId) {
+        companyMap.set(r.id, resolvedCompanyId);
+      } else {
+        const newId = r.id; // use the row's UUID as the new company ID
+        companyMap.set(r.id, newId);
+        newCompaniesToCreate.push({
+          id: newId,
+          name: r.name,
+          normalizedName: r.normalizedName,
+          baseName: r.baseName,
+          cin: r.cin,
+        });
+        candidates.push({ id: newId, normalizedName: r.normalizedName, baseName: r.baseName });
+        baseNameMap.set(r.baseName, candidates);
+      }
+    }
+
+    // ── Step 3: Bulk INSERT new companies ─────────────────────────────────
     let processedCount = 0;
     let failedCount = 0;
 
-    for (let i = 0; i < validRows.length; i += CHUNK) {
-      const chunk = validRows.slice(i, i + CHUNK);
+    for (let i = 0; i < newCompaniesToCreate.length; i += CHUNK) {
+      const chunk = newCompaniesToCreate.slice(i, i + CHUNK);
       try {
         await prisma.company.createMany({
-          data: chunk.map((r) => ({
-            id: r.id,
-            name: r.name,
-            normalizedName: r.normalizedName,
-            cin: r.cin,
-          })),
+          data: chunk,
           skipDuplicates: true,
         });
       } catch (err: any) {
         const errMsg = `Database error saving companies (batch ${Math.floor(i / CHUNK) + 1})`;
         console.error(`[Import ${historyId}] Company chunk ${Math.floor(i / CHUNK) + 1} failed:`, err.message);
-        chunk.forEach((r, ri) =>
-          captureError(i + ri + 2, "CHUNK_FAILED", errMsg, r.name.substring(0, 200), undefined, r.raw)
-        );
         failedCount += chunk.length;
       }
-    }
-
-    // ── Step 3: Fetch company IDs ──────────────────────────────────────────
-    const allNormNames = validRows.map((r) => r.normalizedName);
-    const companyMap = new Map<string, string>();
-
-    for (let i = 0; i < allNormNames.length; i += 900) {
-      const nameChunk = allNormNames.slice(i, i + 900);
-      const companies = await prisma.company.findMany({
-        where: { normalizedName: { in: nameChunk } },
-        select: { id: true, normalizedName: true },
-      });
-      for (const c of companies) companyMap.set(c.normalizedName, c.id);
     }
 
     // ── Step 4: Bulk INSERT OR REPLACE category mappings ──────────────────
@@ -545,6 +611,7 @@ async function processConfirmedImportBackground(
       id: string;
       companyId: string;
       bankId: string;
+      rawCompanyName: string;
       category: string;
       status: string;
       remarks: string | null;
@@ -552,9 +619,18 @@ async function processConfirmedImportBackground(
     }[] = [];
 
     for (const r of validRows) {
-      const companyId = companyMap.get(r.normalizedName);
+      const companyId = companyMap.get(r.id);
       if (!companyId) continue;
-      categoryRows.push({ id: randomUUID(), companyId, bankId, category: r.category, status: r.status, remarks: r.remarks, raw: r.raw });
+      categoryRows.push({ 
+        id: randomUUID(), 
+        companyId, 
+        bankId, 
+        rawCompanyName: r.name, 
+        category: r.category, 
+        status: r.status, 
+        remarks: r.remarks, 
+        raw: r.raw 
+      });
     }
 
     for (let i = 0; i < categoryRows.length; i += CHUNK) {
@@ -581,6 +657,7 @@ async function processConfirmedImportBackground(
             id: r.id,
             companyId: r.companyId,
             bankId: r.bankId,
+            rawCompanyName: r.rawCompanyName,
             category: r.category,
             status: r.status,
             remarks: r.remarks,

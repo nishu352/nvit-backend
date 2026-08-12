@@ -102,6 +102,7 @@ model Company {
   id             String                @id @default(uuid())
   name           String                // Original display name (preserved as-is)
   normalizedName String                @unique // Uppercased, stripped — for dedup & fast lookup
+  baseName       String?               // Stripped of all corporate suffixes for Level 2 matching
   cin            String?               // CIN / Registration number
   pincode        String?               // Primary operating pincode
   city           String?               // City
@@ -111,8 +112,10 @@ model Company {
   createdAt      DateTime              @default(now())
   updatedAt      DateTime              @updatedAt
   bankCategories CompanyBankCategory[]
+  aliases        CompanyAlias[]
 
   @@index([normalizedName])
+  @@index([baseName])
   @@index([pincode])
   @@index([city])
   @@index([state])
@@ -120,18 +123,29 @@ model Company {
   @@map("companies")
 }
 
+model CompanyAlias {
+  id         String   @id @default(uuid())
+  companyId  String
+  alias      String   @unique // Normalized alias
+  company    Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@index([companyId])
+  @@map("company_aliases")
+}
+
 // ─── Company → Bank/NBFC → Category Mapping ──────────────────────────────────
 
 model CompanyBankCategory {
-  id        String   @id @default(uuid())
-  companyId String
-  bankId    String
-  category  String   // CAT A | CAT B | CAT C | UNLISTED | REJECT
-  status    String   @default("APPROVED") // APPROVED | CONDITIONAL | BLOCKED | REJECT
-  remarks   String?
-  source    String   @default("IMPORT") // IMPORT | MANUAL | API
-  createdAt DateTime @default(now())
-  updatedAt DateTime @default(now()) @updatedAt
+  id             String   @id @default(uuid())
+  companyId      String
+  bankId         String
+  rawCompanyName String?  // The exact company name received from this specific bank
+  category       String   // CAT A | CAT B | CAT C | UNLISTED | REJECT
+  status         String   @default("APPROVED") // APPROVED | CONDITIONAL | BLOCKED | REJECT
+  remarks        String?
+  source         String   @default("IMPORT") // IMPORT | MANUAL | API
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @default(now()) @updatedAt
 
   company   Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
   bank      Bank     @relation(fields: [bankId], references: [id], onDelete: Cascade)
