@@ -6,6 +6,8 @@ import {
   updateBank,
   deleteBank,
   toggleBankStatus,
+  clearBankCompanies,
+  clearBankPincodes,
   getAllUsers,
   getAuditLogsList,
   getCompaniesList,
@@ -106,6 +108,26 @@ export async function toggleBankStatusHandler(request: FastifyRequest, reply: Fa
     return reply.send({ success: true, data: bank });
   } catch (err: any) {
     return reply.status(400).send({ error: true, message: err.message || "Failed to toggle status" });
+  }
+}
+
+export async function clearBankCompaniesHandler(request: FastifyRequest, reply: FastifyReply) {
+  const { id } = request.params as { id: string };
+  try {
+    await clearBankCompanies(id);
+    return reply.send({ success: true, message: "Company data cleared successfully" });
+  } catch (err: any) {
+    return reply.status(500).send({ error: true, message: err.message || "Failed to clear companies" });
+  }
+}
+
+export async function clearBankPincodesHandler(request: FastifyRequest, reply: FastifyReply) {
+  const { id } = request.params as { id: string };
+  try {
+    await clearBankPincodes(id);
+    return reply.send({ success: true, message: "Pincode data cleared successfully" });
+  } catch (err: any) {
+    return reply.status(500).send({ error: true, message: err.message || "Failed to clear pincodes" });
   }
 }
 

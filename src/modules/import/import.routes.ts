@@ -7,6 +7,7 @@ import {
   getImportHistoryHandler,
   getImportErrorsHandler,
   forceSyncHandler,
+  abortImportHandler,
 } from "./import.controller.js";
 import { authenticate, authorizeRoles } from "../../middleware/auth.js";
 
@@ -56,6 +57,13 @@ export async function importRoutes(app: FastifyInstance) {
     "/api/v1/import/:historyId/force-sync",
     { preHandler: [authenticate, authorizeRoles(...IMPORT_ROLES)] },
     forceSyncHandler
+  );
+
+  // ── Abort Import ────────────────────────────────────────────────────────────
+  app.post(
+    "/api/v1/import/:historyId/abort",
+    { preHandler: [authenticate, authorizeRoles(...IMPORT_ROLES)] },
+    abortImportHandler
   );
 
   // ── Legacy single-shot upload (backward compatibility) ────────────────────

@@ -234,6 +234,18 @@ export async function toggleBankStatus(id: string) {
   });
 }
 
+export async function clearBankCompanies(bankId: string) {
+  return await prisma.companyBankCategory.deleteMany({
+    where: { bankId },
+  });
+}
+
+export async function clearBankPincodes(bankId: string) {
+  return await prisma.pincodeServiceability.deleteMany({
+    where: { bankId },
+  });
+}
+
 export async function getAllUsers() {
   return await prisma.user.findMany({
     select: {

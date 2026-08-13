@@ -593,6 +593,11 @@ async function processConfirmedImportBackground(
     let failedCount = 0;
 
     for (let i = 0; i < newCompaniesToCreate.length; i += CHUNK) {
+      const checkStatus = await prisma.importHistory.findUnique({ where: { id: historyId }, select: { status: true } });
+      if (checkStatus?.status === "CANCELLED") {
+        throw new Error("Import aborted by user.");
+      }
+      
       const chunk = newCompaniesToCreate.slice(i, i + CHUNK);
       try {
         await prisma.company.createMany({
@@ -634,6 +639,11 @@ async function processConfirmedImportBackground(
     }
 
     for (let i = 0; i < categoryRows.length; i += CHUNK) {
+      const checkStatus = await prisma.importHistory.findUnique({ where: { id: historyId }, select: { status: true } });
+      if (checkStatus?.status === "CANCELLED") {
+        throw new Error("Import aborted by user.");
+      }
+
       const chunk = categoryRows.slice(i, i + CHUNK);
       try {
         // Find existing records to log them as skipped (for MERGE mode)
@@ -970,6 +980,11 @@ async function processPincodeImportBackground(
 
     const CHUNK = 500;
     for (let i = 0; i < validRows.length; i += CHUNK) {
+      const checkStatus = await prisma.importHistory.findUnique({ where: { id: historyId }, select: { status: true } });
+      if (checkStatus?.status === "CANCELLED") {
+        throw new Error("Import aborted by user.");
+      }
+
       const chunk = validRows.slice(i, i + CHUNK);
       try {
         const placeholders = chunk.map((r, idx) => `($${idx * 9 + 1},$${idx * 9 + 2},$${idx * 9 + 3},$${idx * 9 + 4},$${idx * 9 + 5},$${idx * 9 + 6},$${idx * 9 + 7},$${idx * 9 + 8},$${idx * 9 + 9})`).join(",");
@@ -1112,7 +1127,7 @@ export async function forceSyncErrors(historyId: string, errorIds: string[], use
       const values = chunk.flatMap(r => [r.id, r.bankId, r.pincode, r.state, r.city, r.area, r.isServiceable, r.isNegative, r.category]);
       
       await prisma.$executeRawUnsafe(`
-        INSERT INTO "PincodeServiceability" ("id", "bankId", "pincode", "state", "city", "area", "isServiceable", "isNegative", "category")
+        INSERT INTO "pincode_serviceabilities" ("id", "bankId", "pincode", "state", "city", "area", "isServiceable", "isNegative", "category")
         VALUES ${placeholders}
         ON CONFLICT ("bankId", "pincode") DO UPDATE SET
           "state" = EXCLUDED."state",
@@ -1161,3 +1176,18 @@ export async function forceSyncErrors(historyId: string, errorIds: string[], use
   return { forceSynced: processedCount };
 }
 
+
+// --- Abort Import -------------------------------------------------------------
+
+export async function abortImport(historyId: string) {
+  const history = await prisma.importHistory.findUnique({ where: { id: historyId } });
+  if (!history) throw new Error("Import history not found.");
+  if (history.status !== "PROCESSING") {
+    throw new Error(`Cannot abort import because it is in  state.`);
+  }
+
+  await prisma.importHistory.update({
+    where: { id: historyId },
+    data: { status: "CANCELLED", errorMessage: "Import aborted by user." }
+  });
+}

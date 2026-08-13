@@ -8,6 +8,7 @@ import {
   getImportErrors,
   ConfirmedMapping,
   forceSyncErrors,
+  abortImport,
 } from "./import.service.js";
 
 // ─── LEGACY: Single-shot upload (backward compat) ─────────────────────────────
@@ -264,6 +265,21 @@ export async function forceSyncHandler(request: FastifyRequest, reply: FastifyRe
     return reply.status(500).send({
       error: true,
       message: err.message || "Failed to force sync records.",
+    });
+  }
+}
+
+// ─── Abort Import ─────────────────────────────────────────────────────────────
+
+export async function abortImportHandler(request: FastifyRequest, reply: FastifyReply) {
+  const { historyId } = request.params as { historyId: string };
+  try {
+    await abortImport(historyId);
+    return reply.send({ success: true, message: "Import aborted successfully." });
+  } catch (err: any) {
+    return reply.status(500).send({
+      error: true,
+      message: err.message || "Failed to abort import.",
     });
   }
 }

@@ -55,7 +55,21 @@ export async function searchCompanies(query: string, limitNum: number = 25) {
     }),
   ]);
 
-  return rawCompanies.map((c: any) => {
+  // In-memory deduplication by baseName to ensure no duplicate companies in UI
+  const dedupedCompanies = new Map<string, any>();
+  for (const c of rawCompanies) {
+    const { baseName } = normalizeCompanyName(c.name);
+    if (!dedupedCompanies.has(baseName)) {
+      dedupedCompanies.set(baseName, { ...c, bankCategories: [...c.bankCategories] });
+    } else {
+      const existing = dedupedCompanies.get(baseName);
+      existing.bankCategories.push(...c.bankCategories);
+    }
+  }
+
+  const finalCompanies = Array.from(dedupedCompanies.values());
+
+  return finalCompanies.map((c: any) => {
     const categoryMap = new Map<string, any>();
     (c.bankCategories || []).forEach((bc: any) => {
       if (bc.bank?.id) {
@@ -184,5 +198,14 @@ export async function getCompanyAutocomplete(query: string) {
     orderBy: { name: "asc" },
   });
 
-  return raw;
+  // Deduplicate for autocomplete
+  const deduped = new Map<string, any>();
+  for (const c of raw) {
+    const { baseName } = normalizeCompanyName(c.name);
+    if (!deduped.has(baseName)) {
+      deduped.set(baseName, c);
+    }
+  }
+
+  return Array.from(deduped.values()).slice(0, 10);
 }
