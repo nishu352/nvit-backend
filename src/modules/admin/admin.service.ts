@@ -1,7 +1,12 @@
 import { prisma } from "../../config/prisma.js";
 
+let cachedStats: { data: any; expiry: number } | null = null;
 
 export async function getAdminDashboardStats() {
+  if (cachedStats && Date.now() < cachedStats.expiry) {
+    return cachedStats.data;
+  }
+
   try {
     const todayStart = new Date();
     todayStart.setHours(0, 0, 0, 0);
@@ -109,7 +114,7 @@ export async function getAdminDashboardStats() {
       ? (storageSetting.value as any)
       : { currentUsageMb: 2.1, maxLimitMb: 1024 };
 
-    return {
+    const result = {
       metrics: {
         totalBanks,
         totalCompanies,
@@ -135,6 +140,13 @@ export async function getAdminDashboardStats() {
       recentAuditLogs: recentActivities,
       recentPolicyUpdates,
     };
+
+    cachedStats = {
+      data: result,
+      expiry: Date.now() + 30 * 1000,
+    };
+
+    return result;
   } catch (err: any) {
     console.error("Dashboard stats query failed:", err.message);
 
