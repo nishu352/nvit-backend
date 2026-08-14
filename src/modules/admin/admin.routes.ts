@@ -48,6 +48,10 @@ import {
   getSystemSettingsHandler,
   updateSystemSettingsHandler,
 } from "./admin.controller.js";
+import {
+  scanDatabaseHandler,
+  cleanDatabaseHandler,
+} from "./maintenance.controller.js";
 import { authenticate, authorizeRoles } from "../../middleware/auth.js";
 
 export async function adminRoutes(app: FastifyInstance) {
@@ -127,4 +131,8 @@ export async function adminRoutes(app: FastifyInstance) {
   // System Configuration
   app.get("/api/v1/admin/system", superOrAdminHandlers, getSystemSettingsHandler);
   app.put("/api/v1/admin/system", superOrAdminHandlers, updateSystemSettingsHandler);
+
+  // Database Maintenance & Safe Sanitizer
+  app.get("/api/v1/admin/maintenance/scan", superOrAdminHandlers, scanDatabaseHandler);
+  app.post("/api/v1/admin/maintenance/clean", superOrAdminHandlers, cleanDatabaseHandler);
 }
