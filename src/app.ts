@@ -46,16 +46,26 @@ export async function buildApp() {
       const allowedOrigins = process.env.CORS_ORIGIN
         ? process.env.CORS_ORIGIN.split(",").map((s) => s.trim())
         : [];
-      if (
-        !origin ||
-        process.env.NODE_ENV !== "production" ||
-        /http:\/\/localhost:(3000|3001|3002|3003)/.test(origin) ||
-        allowedOrigins.includes("*") ||
-        allowedOrigins.includes(origin)
-      ) {
+
+      if (!origin || process.env.NODE_ENV !== "production" || allowedOrigins.includes("*") || allowedOrigins.includes(origin)) {
         cb(null, true);
         return;
       }
+
+      try {
+        const hostname = new URL(origin).hostname;
+        if (
+          hostname === "localhost" ||
+          hostname === "127.0.0.1" ||
+          hostname === "nvit.space" ||
+          hostname.endsWith(".nvit.space") ||
+          hostname.endsWith(".vercel.app")
+        ) {
+          cb(null, true);
+          return;
+        }
+      } catch (_) {}
+
       cb(null, false);
     },
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
