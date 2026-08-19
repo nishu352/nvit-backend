@@ -234,14 +234,14 @@ ${jsonConfidenceFields}
           contents: [{ parts: [{ text: prompt }] }],
           generationConfig: {
             temperature: 0.1,
-            maxOutputTokens: 512, // JSON mapping response is small — 5 fields, ~100 tokens
+            maxOutputTokens: 512,
             responseMimeType: "application/json",
           },
           safetySettings: [
             { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" },
           ],
         }),
-        signal: AbortSignal.timeout(15000), // 15s — lite model, no thinking overhead
+        signal: AbortSignal.timeout(8000), // 8s hard timeout — fall back to rule-based if slow
       }
     );
 

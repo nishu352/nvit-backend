@@ -1,4 +1,6 @@
 import { prisma } from "../../config/prisma.js";
+import { normalizeCompanyName } from "../../utils/normalize.js";
+import { calculateCompanyRelevance, tokenize } from "../../utils/relevanceRanker.js";
 
 let cachedStats: { data: any; expiry: number } | null = null;
 
@@ -246,10 +248,33 @@ export async function toggleBankStatus(id: string) {
   });
 }
 
-export async function clearBankCompanies(bankId: string) {
-  return await prisma.companyBankCategory.deleteMany({
+export async function clearBankCompanies(bankId: string, cleanOrphans: boolean = false) {
+  const deleteResult = await prisma.companyBankCategory.deleteMany({
     where: { bankId },
   });
+
+  let orphanCount = 0;
+  if (cleanOrphans) {
+    const orphans = await prisma.company.findMany({
+      where: {
+        bankCategories: { none: {} },
+      },
+      select: { id: true },
+    });
+
+    if (orphans.length > 0) {
+      const orphanIds = orphans.map((o) => o.id);
+      const orphanDeleteResult = await prisma.company.deleteMany({
+        where: { id: { in: orphanIds } },
+      });
+      orphanCount = orphanDeleteResult.count;
+    }
+  }
+
+  return {
+    deletedMappings: deleteResult.count,
+    deletedOrphans: orphanCount,
+  };
 }
 
 export async function clearBankPincodes(bankId: string) {
@@ -292,38 +317,140 @@ export async function getAuditLogsList(page: number = 1, limit: number = 30) {
 }
 
 export async function getCompaniesList(page: number = 1, limit: number = 30, query?: string) {
-  const skip = (page - 1) * limit;
+  const safeLimit = Math.min(Math.max(1, limit), 100);
+  const skip = (page - 1) * safeLimit;
   const whereClause: any = {};
-  if (query) {
-    const norm = query.toUpperCase().replace(/[^A-Z0-9]/g, "");
-    whereClause.OR = [
-      { name: { startsWith: query, mode: "insensitive" } },
+  
+  if (query && query.trim()) {
+    const cleanQuery = query.trim();
+    const { normalizedName: norm, baseName } = normalizeCompanyName(cleanQuery);
+    const tokens = tokenize(cleanQuery);
+
+    const orConditions: any[] = [
+      { name: { startsWith: cleanQuery, mode: "insensitive" } },
       ...(norm ? [{ normalizedName: { startsWith: norm } }] : []),
-      { cin: { startsWith: query, mode: "insensitive" } },
+      ...(baseName ? [{ baseName: { startsWith: baseName } }] : []),
+      { name: { contains: cleanQuery, mode: "insensitive" } },
+      { cin: { contains: cleanQuery, mode: "insensitive" } },
     ];
+
+    if (tokens.length > 1) {
+      orConditions.unshift({
+        AND: tokens.filter(t => t.length >= 2).map((t) => ({
+          name: { contains: t, mode: "insensitive" },
+        })),
+      });
+      if (tokens[0] && tokens[0].length >= 3) {
+        orConditions.push({ name: { startsWith: tokens[0], mode: "insensitive" } });
+      }
+    }
+
+    whereClause.OR = orConditions;
+
+    // Fetch candidate pool to rank
+    const candidatePoolLimit = Math.min(200, Math.max(100, (skip + safeLimit) * 3));
+
+    const [total, rawCandidates] = await Promise.all([
+      prisma.company.count({ where: whereClause }),
+      prisma.company.findMany({
+        where: whereClause,
+        take: candidatePoolLimit,
+        select: {
+          id: true,
+          name: true,
+          normalizedName: true,
+          baseName: true,
+          cin: true,
+          pincode: true,
+          city: true,
+          state: true,
+          status: true,
+          createdAt: true,
+          updatedAt: true,
+          bankCategories: {
+            select: {
+              id: true,
+              category: true,
+              status: true,
+              remarks: true,
+              rawCompanyName: true,
+              bank: { select: { id: true, name: true, code: true, type: true, logoUrl: true } },
+            },
+          },
+        },
+      }),
+    ]);
+
+    // Score candidates
+    const scored = rawCandidates
+      .map((c) => {
+        const rel = calculateCompanyRelevance(c.name, cleanQuery, c.normalizedName, c.baseName || undefined);
+        return {
+          ...c,
+          relevanceScore: rel.score,
+          matchType: rel.matchType,
+        };
+      })
+      .filter((c) => c.relevanceScore > 0);
+
+    scored.sort((a, b) => {
+      if (b.relevanceScore !== a.relevanceScore) {
+        return b.relevanceScore - a.relevanceScore;
+      }
+      if (a.name.length !== b.name.length) {
+        return a.name.length - b.name.length;
+      }
+      return a.name.localeCompare(b.name);
+    });
+
+    const items = scored.slice(skip, skip + safeLimit);
+
+    return {
+      total,
+      page,
+      totalPages: Math.ceil(total / safeLimit),
+      items,
+    };
   }
 
+  // Default listing without search query
   const [total, items] = await Promise.all([
     prisma.company.count({ where: whereClause }),
     prisma.company.findMany({
       where: whereClause,
       skip,
-      take: limit,
+      take: safeLimit,
       orderBy: { name: "asc" },
-      include: {
+      select: {
+        id: true,
+        name: true,
+        normalizedName: true,
+        baseName: true,
+        cin: true,
+        pincode: true,
+        city: true,
+        state: true,
+        status: true,
+        createdAt: true,
+        updatedAt: true,
         bankCategories: {
-          include: {
-            bank: { select: { name: true, code: true } }
-          }
-        }
-      }
+          select: {
+            id: true,
+            category: true,
+            status: true,
+            remarks: true,
+            rawCompanyName: true,
+            bank: { select: { id: true, name: true, code: true, type: true, logoUrl: true } },
+          },
+        },
+      },
     }),
   ]);
 
   return {
     total,
     page,
-    totalPages: Math.ceil(total / limit),
+    totalPages: Math.ceil(total / safeLimit),
     items,
   };
 }
@@ -339,18 +466,107 @@ export async function createCompany(data: { name: string; cin?: string }) {
   });
 }
 
-export async function updateCompany(id: string, data: { name?: string; cin?: string }) {
+export async function updateCompany(
+  id: string,
+  data: {
+    name?: string;
+    cin?: string;
+    pincode?: string;
+    city?: string;
+    state?: string;
+    district?: string;
+    status?: string;
+    bankCategories?: Array<{
+      id?: string;
+      bankId: string;
+      category: string;
+      status?: string;
+      remarks?: string;
+      delete?: boolean;
+    }>;
+  }
+) {
   const updateData: any = {};
   if (data.name) {
+    const { normalizedName, baseName } = normalizeCompanyName(data.name);
     updateData.name = data.name.trim();
-    updateData.normalizedName = data.name.toUpperCase().replace(/[^A-Z0-9]/g, "");
+    updateData.normalizedName = normalizedName;
+    updateData.baseName = baseName;
   }
   if (data.cin !== undefined) {
-    updateData.cin = data.cin?.trim() || null;
+    updateData.cin = data.cin ? data.cin.trim() : null;
   }
-  return await prisma.company.update({
+  if (data.pincode !== undefined) {
+    updateData.pincode = data.pincode ? data.pincode.trim() : null;
+  }
+  if (data.city !== undefined) {
+    updateData.city = data.city ? data.city.trim() : null;
+  }
+  if (data.state !== undefined) {
+    updateData.state = data.state ? data.state.trim() : null;
+  }
+  if (data.district !== undefined) {
+    updateData.district = data.district ? data.district.trim() : null;
+  }
+  if (data.status) {
+    updateData.status = data.status;
+  }
+
+  const updatedCompany = await prisma.company.update({
     where: { id },
     data: updateData,
+  });
+
+  // Handle bank category updates if provided
+  if (Array.isArray(data.bankCategories)) {
+    for (const cat of data.bankCategories) {
+      if (!cat.bankId) continue;
+
+      if (cat.delete || cat.category === "DELETE") {
+        await prisma.companyBankCategory.deleteMany({
+          where: {
+            companyId: id,
+            bankId: cat.bankId,
+          },
+        });
+      } else {
+        await prisma.companyBankCategory.upsert({
+          where: {
+            companyId_bankId: {
+              companyId: id,
+              bankId: cat.bankId,
+            },
+          },
+          update: {
+            category: cat.category.toUpperCase().trim(),
+            status: cat.status || "APPROVED",
+            remarks: cat.remarks ? cat.remarks.trim() : null,
+            rawCompanyName: data.name ? data.name.trim() : updatedCompany.name,
+          },
+          create: {
+            companyId: id,
+            bankId: cat.bankId,
+            category: cat.category.toUpperCase().trim(),
+            status: cat.status || "APPROVED",
+            remarks: cat.remarks ? cat.remarks.trim() : null,
+            rawCompanyName: data.name ? data.name.trim() : updatedCompany.name,
+          },
+        });
+      }
+    }
+  }
+
+  return await prisma.company.findUnique({
+    where: { id },
+    include: {
+      bankCategories: {
+        include: {
+          bank: {
+            select: { id: true, name: true, code: true, type: true, logoUrl: true },
+          },
+        },
+      },
+    },
   });
 }
 
@@ -988,4 +1204,121 @@ export async function updateSystemSettings(data: Record<string, any>) {
     });
   }
   return await getSystemSettings();
+}
+
+export async function getVpsDatabaseAnalytics() {
+  const startPing = performance.now();
+  let isVpsConnected = false;
+  let vpsLatencyMs = 0;
+  let dbSizeStr = "0 MB";
+  let dbSizeBytes = 0;
+  let activeConnections = 0;
+  let cacheHitRatio = "99.9%";
+  let tableStats: any[] = [];
+  let indexStats: any[] = [];
+
+  try {
+    const sizeRes: any = await prisma.$queryRawUnsafe(`
+      SELECT 
+        pg_size_pretty(pg_database_size('company_db')) AS size_pretty,
+        pg_database_size('company_db') AS size_bytes;
+    `);
+    vpsLatencyMs = Math.round(performance.now() - startPing);
+    isVpsConnected = true;
+
+    if (sizeRes && sizeRes[0]) {
+      dbSizeStr = sizeRes[0].size_pretty;
+      dbSizeBytes = Number(sizeRes[0].size_bytes);
+    }
+
+    // Active connections
+    const connRes: any = await prisma.$queryRawUnsafe(`
+      SELECT count(*) AS active_conns FROM pg_stat_activity WHERE datname = 'company_db';
+    `);
+    if (connRes && connRes[0]) {
+      activeConnections = Number(connRes[0].active_conns);
+    }
+
+    // Cache hit ratio
+    const cacheRes: any = await prisma.$queryRawUnsafe(`
+      SELECT 
+        CASE 
+          WHEN (blks_hit + blks_read) = 0 THEN 100.0
+          ELSE ROUND((blks_hit::numeric / (blks_hit + blks_read)::numeric) * 100.0, 2)
+        END AS hit_ratio
+      FROM pg_stat_database 
+      WHERE datname = 'company_db';
+    `);
+    if (cacheRes && cacheRes[0]) {
+      cacheHitRatio = `${cacheRes[0].hit_ratio}%`;
+    }
+
+    // Table stats
+    const tblRes: any = await prisma.$queryRawUnsafe(`
+      SELECT 
+        relname AS table_name,
+        n_live_tup AS estimated_rows,
+        pg_size_pretty(pg_total_relation_size(relid)) AS total_size,
+        pg_size_pretty(pg_relation_size(relid)) AS data_size,
+        pg_size_pretty(pg_indexes_size(relid)) AS index_size
+      FROM pg_stat_user_tables
+      ORDER BY pg_total_relation_size(relid) DESC, relname ASC;
+    `);
+    tableStats = tblRes || [];
+
+    // Trigram GIN index check
+    const idxRes: any = await prisma.$queryRawUnsafe(`
+      SELECT 
+        indexname, 
+        tablename, 
+        pg_size_pretty(pg_relation_size(quote_ident(indexname)::regclass)) AS size
+      FROM pg_indexes 
+      WHERE schemaname = 'public' AND indexname = 'idx_companies_name_trgm';
+    `);
+    indexStats = idxRes || [];
+  } catch (err: any) {
+    vpsLatencyMs = Math.round(performance.now() - startPing);
+    isVpsConnected = false;
+  }
+
+  // Row counts for quick summary
+  const [totalCompanies, totalCategories, totalBanks, totalPincodes] = await Promise.all([
+    prisma.company.count().catch(() => 0),
+    prisma.companyBankCategory.count().catch(() => 0),
+    prisma.bank.count().catch(() => 0),
+    prisma.pincodeServiceability.count().catch(() => 0),
+  ]);
+
+  return {
+    timestamp: new Date().toISOString(),
+    vps: {
+      host: "15.235.145.222",
+      port: 5432,
+      database: "company_db",
+      engine: "PostgreSQL 16",
+      ssl: "ENABLED (Required)",
+      status: isVpsConnected ? "HEALTHY" : "DISCONNECTED",
+      latencyMs: vpsLatencyMs,
+      databaseSize: dbSizeStr,
+      databaseSizeBytes: dbSizeBytes,
+      activeConnections,
+      maxConnections: 30,
+      cacheHitRatio,
+      ginTrigramActive: indexStats.length > 0,
+      counts: {
+        totalCompanies,
+        totalCategories,
+        totalBanks,
+        totalPincodes,
+      },
+      tableBreakdown: tableStats,
+    },
+    supabase: {
+      projectRef: "ondcdhiuoqqqspvnufdh",
+      region: "aws-0-ap-south-1",
+      role: "Preserved Secondary / Standby Backup",
+      status: "CONFIGURED",
+      environmentBackup: ".env.supabase.backup",
+    },
+  };
 }

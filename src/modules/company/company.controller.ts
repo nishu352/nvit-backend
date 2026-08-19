@@ -10,10 +10,21 @@ export async function searchCompaniesHandler(request: FastifyRequest, reply: Fas
 
   try {
     const limit = parseInt(result.data.limit, 10) || 20;
-    const data = await searchCompanies(result.data.q, limit);
+    const page = parseInt(result.data.page, 10) || 1;
+    const data = await searchCompanies(result.data.q, {
+      limit,
+      page,
+      pincode: result.data.pincode,
+      city: result.data.city,
+      state: result.data.state,
+      bankId: result.data.bankId,
+      category: result.data.category,
+    });
+
     return reply.send({
       success: true,
       count: data.length,
+      page,
       data,
     });
   } catch (err: any) {

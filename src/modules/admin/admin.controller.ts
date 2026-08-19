@@ -43,6 +43,7 @@ import {
   revokeApiKey,
   getSystemSettings,
   updateSystemSettings,
+  getVpsDatabaseAnalytics,
 } from "./admin.service.js";
 
 export async function getDashboardStatsHandler(request: FastifyRequest, reply: FastifyReply) {
@@ -113,9 +114,16 @@ export async function toggleBankStatusHandler(request: FastifyRequest, reply: Fa
 
 export async function clearBankCompaniesHandler(request: FastifyRequest, reply: FastifyReply) {
   const { id } = request.params as { id: string };
+  const { cleanOrphans } = (request.query || {}) as { cleanOrphans?: string };
+  const shouldCleanOrphans = cleanOrphans === "true" || cleanOrphans === "1";
+
   try {
-    await clearBankCompanies(id);
-    return reply.send({ success: true, message: "Company data cleared successfully" });
+    const result = await clearBankCompanies(id, shouldCleanOrphans);
+    return reply.send({
+      success: true,
+      message: `Bank company data cleared successfully. ${result.deletedMappings} mappings removed${shouldCleanOrphans ? ` (${result.deletedOrphans} orphaned companies cleaned)` : ""}.`,
+      data: result,
+    });
   } catch (err: any) {
     return reply.status(500).send({ error: true, message: err.message || "Failed to clear companies" });
   }
@@ -606,5 +614,14 @@ export async function rollbackWebsiteCMSHandler(request: FastifyRequest, reply: 
     return reply.send({ success: true, data });
   } catch (err: any) {
     return reply.status(400).send({ error: true, message: err.message || "Failed to rollback CMS content" });
+  }
+}
+
+export async function getVpsDatabaseAnalyticsHandler(request: FastifyRequest, reply: FastifyReply) {
+  try {
+    const analytics = await getVpsDatabaseAnalytics();
+    return reply.send({ success: true, data: analytics });
+  } catch (err: any) {
+    return reply.status(500).send({ error: true, message: err.message || "Failed to fetch database analytics" });
   }
 }

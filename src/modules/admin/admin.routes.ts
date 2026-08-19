@@ -47,6 +47,7 @@ import {
   revokeApiKeyHandler,
   getSystemSettingsHandler,
   updateSystemSettingsHandler,
+  getVpsDatabaseAnalyticsHandler,
 } from "./admin.controller.js";
 import {
   scanDatabaseHandler,
@@ -63,8 +64,9 @@ export async function adminRoutes(app: FastifyInstance) {
   app.get("/api/v1/cms/published", getPublishedWebsiteCMSHandler);
   app.get("/api/v1/marketing/public", getPublicMarketingSettingsHandler);
 
-  // Dashboard Stats
+  // Dashboard Stats & VPS Analytics
   app.get("/api/v1/admin/dashboard/stats", readAllHandlers, getDashboardStatsHandler);
+  app.get("/api/v1/admin/analytics/vps-db", readAllHandlers, getVpsDatabaseAnalyticsHandler);
 
   // Banks & NBFCs
   app.get("/api/v1/admin/banks", readAllHandlers, getBanksHandler);

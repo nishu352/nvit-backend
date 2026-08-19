@@ -113,20 +113,29 @@ function validateFileType(buffer: Buffer, fileName: string): void {
 }
 
 // ─── Main Analysis Function ───────────────────────────────────────────────────
+//
+// MEMORY STRATEGY:
+//  - Single XLSX.read pass (not two) — eliminates double memory usage
+//  - workbook freed immediately after sheet_to_json
+//  - rawMatrix freed immediately after dataMatrix is sliced
+//  - dataMatrix freed (length=0) after rawRows are built
+//  - rawRows + inline duplicate detection in ONE loop
+//
+// This prevents OOM crashes on 70,000+ row files (previously crashed at ~4GB)
 
 export function analyzeFileBuffer(buffer: Buffer, fileName: string): AnalyzeResult {
   // 1. Validate file type/extension/magic bytes
   validateFileType(buffer, fileName);
 
-  // 2. Parse workbook — explicitly disable macros/formulas
+  // 2. Single-pass workbook parse — ALL rows, once only
   let workbook: XLSX.WorkBook;
   try {
     workbook = XLSX.read(buffer, {
       type: "buffer",
-      cellDates: true,
+      cellDates: false,   // Raw strings — much faster & less memory than cellDates:true
       cellFormula: false, // Never execute formulas
       cellHTML: false,    // Never render HTML cells
-      sheetRows: 0,       // Read all rows
+      sheetRows: 0,       // All rows
     });
   } catch (err: any) {
     throw new Error(`Failed to parse file: ${err.message}. Ensure the file is not password-protected or corrupted.`);
@@ -140,12 +149,15 @@ export function analyzeFileBuffer(buffer: Buffer, fileName: string): AnalyzeResu
   const sheetName = workbook.SheetNames[0]; // Always use first sheet
   const sheet = workbook.Sheets[sheetName];
 
-  // 3. Convert to 2D array (header:1 mode avoids XLSX auto-naming issues)
-  const rawMatrix = XLSX.utils.sheet_to_json<any[]>(sheet, {
+  // 3. Convert to 2D array
+  let rawMatrix: any[][] = XLSX.utils.sheet_to_json<any[]>(sheet, {
     header: 1,
     defval: "",
     blankrows: false,
   });
+
+  // Free workbook immediately — rawMatrix is all we need
+  (workbook as any) = null;
 
   if (rawMatrix.length < 2) {
     throw new Error("File contains insufficient data. At least a header row and one data row are required.");
@@ -164,25 +176,29 @@ export function analyzeFileBuffer(buffer: Buffer, fileName: string): AnalyzeResu
   }
 
   const headerRow = (rawMatrix[headerRowIndex] as any[]).map((h) => String(h || "").trim());
-  const dataMatrix = rawMatrix.slice(headerRowIndex + 1).filter(
+
+  // Build dataMatrix and immediately null rawMatrix to free header rows from memory
+  let dataMatrix: any[][] = rawMatrix.slice(headerRowIndex + 1).filter(
     (row) => Array.isArray(row) && row.some((c) => String(c || "").trim() !== "")
   );
+  (rawMatrix as any) = null; // Free — GC can reclaim header rows now
 
   if (dataMatrix.length === 0) {
     throw new Error("No data rows found below the header row.");
   }
 
-  if (dataMatrix.length > 200000) {
-    throw new Error(`File contains ${dataMatrix.length.toLocaleString()} rows which exceeds the 200,000 row limit.`);
+  if (dataMatrix.length > 500000) {
+    throw new Error(`File contains ${dataMatrix.length.toLocaleString()} rows which exceeds the 500,000 row limit.`);
   }
 
-  // 5. Build column info (for schema — sent to client)
+  const totalRows = dataMatrix.length;
+
+  // 5. Build column info — sample first 100 rows only for type detection
   const columns: ColumnInfo[] = [];
   for (let ci = 0; ci < headerRow.length; ci++) {
     const header = headerRow[ci];
     if (!header) continue; // Skip unnamed columns
 
-    // Sample first 100 rows for type detection
     const colValues = dataMatrix.slice(0, 100).map((row) =>
       sanitizeCellValue(String(Array.isArray(row) ? row[ci] ?? "" : ""))
     );
@@ -214,35 +230,39 @@ export function analyzeFileBuffer(buffer: Buffer, fileName: string): AnalyzeResu
     return record;
   });
 
-  // 7. Build ALL raw rows (server-side only — stored in session, NOT sent to client)
-  const rawRows: Record<string, string>[] = dataMatrix.map((row) => {
+  // 7. Build rawRows + count duplicates in ONE loop, then free dataMatrix
+  // Pre-allocate array for better performance on large datasets
+  const rawRows: Record<string, string>[] = new Array(totalRows);
+  const companyColHeader = columns[0]?.header || "";
+  const seen = new Set<string>();
+  let inFileDuplicates = 0;
+
+  for (let ri = 0; ri < totalRows; ri++) {
+    const row = dataMatrix[ri];
     const record: Record<string, string> = {};
     for (const col of columns) {
       record[col.header] = String(Array.isArray(row) ? row[col.index] ?? "" : "").trim();
     }
-    return record;
-  });
+    rawRows[ri] = record;
 
-  // 8. Count in-file duplicates (by first column — usually company name)
-  const companyColHeader = columns[0]?.header || "";
-  const seen = new Set<string>();
-  let inFileDuplicates = 0;
-  for (const row of rawRows) {
-    const val = (row[companyColHeader] || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
-    if (!val) continue;
-    if (seen.has(val)) {
-      inFileDuplicates++;
-    } else {
-      seen.add(val);
+    // Inline duplicate detection — avoids a second pass over rawRows
+    const val = (record[companyColHeader] || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+    if (val) {
+      if (seen.has(val)) { inFileDuplicates++; }
+      else { seen.add(val); }
     }
   }
+
+  // Free dataMatrix — GC can reclaim the 2D source array
+  dataMatrix.length = 0;
+  (dataMatrix as any) = null;
 
   return {
     schema: {
       fileName,
       sheetName,
       sheetCount,
-      rowCount: dataMatrix.length,
+      rowCount: totalRows,
       columnCount: columns.length,
       columns,
       sampleRows,

@@ -7,7 +7,7 @@
     "dev": "tsx watch src/app.ts",
     "build": "prisma generate && tsc",
     "postinstall": "prisma generate",
-    "start": "node dist/app.js",
+    "start": "node --max-old-space-size=4096 dist/app.js",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:deploy": "prisma db push",

@@ -1,42 +1,76 @@
 import { prisma } from "../../config/prisma.js";
 import { normalizeCompanyName } from "../../utils/normalize.js";
+import { calculateCompanyRelevance, tokenize } from "../../utils/relevanceRanker.js";
 
-export async function searchCompanies(query: string, limitNum: number = 25) {
-  const cleanQuery = query.trim();
+export interface CompanySearchFilters {
+  limit?: number;
+  page?: number;
+  pincode?: string;
+  city?: string;
+  state?: string;
+  bankId?: string;
+  category?: string;
+}
+
+/**
+ * Common candidate retrieval & relevance scoring pipeline.
+ * Used identically by both /company/search and /company/autocomplete.
+ */
+async function getRankedCompanyCandidates(
+  query: string,
+  extraWhere: any = {},
+  candidatePoolLimit: number = 100
+) {
+  const cleanQuery = (query || "").trim();
   if (!cleanQuery) return [];
 
-  const { normalizedName } = normalizeCompanyName(cleanQuery);
+  const { normalizedName, baseName } = normalizeCompanyName(cleanQuery);
+  const tokens = tokenize(cleanQuery);
 
-  const matchedAliases = await prisma.companyAlias.findMany({
-    where: { alias: { startsWith: normalizedName } },
-    select: { companyId: true }
-  });
-  const aliasCompanyIds = matchedAliases.map(a => a.companyId);
+  // Check aliases if normalizedName is available
+  let aliasCompanyIds: string[] = [];
+  if (normalizedName) {
+    const matchedAliases = await prisma.companyAlias.findMany({
+      where: { alias: { startsWith: normalizedName } },
+      select: { companyId: true },
+      take: 30,
+    });
+    aliasCompanyIds = matchedAliases.map((a) => a.companyId);
+  }
 
-  const [allBanks, rawCompanies] = await Promise.all([
-    prisma.bank.findMany({
-      where: { partnerStatus: "ACTIVE" },
-      orderBy: { priority: "asc" },
+  const candidateMap = new Map<string, any>();
+
+  // ── PHASE 1: Multi-Token ALL-MATCH (Highest Priority Candidate Pool) ─────────
+  // When user types multiple words like "tata capital" or "mahindra finance",
+  // explicitly fetch companies matching ALL tokens first.
+  if (tokens.length > 1) {
+    const allTokensCondition: any = {
+      status: "ACTIVE",
+      ...extraWhere,
+      AND: tokens.filter((t) => t.length >= 2).map((t) => ({
+        name: { contains: t, mode: "insensitive" },
+      })),
+    };
+
+    const allTokenMatches = await prisma.company.findMany({
+      where: allTokensCondition,
+      take: 60,
       select: {
         id: true,
         name: true,
-        code: true,
-        type: true,
-        logoUrl: true,
-      },
-    }),
-    prisma.company.findMany({
-      where: {
-        OR: [
-          { name: { startsWith: cleanQuery, mode: "insensitive" } },
-          ...(normalizedName ? [{ normalizedName: { startsWith: normalizedName } }] : []),
-          ...(aliasCompanyIds.length > 0 ? [{ id: { in: aliasCompanyIds } }] : []),
-        ],
-      },
-      take: limitNum,
-      include: {
+        normalizedName: true,
+        baseName: true,
+        cin: true,
+        pincode: true,
+        city: true,
+        state: true,
         bankCategories: {
-          include: {
+          select: {
+            id: true,
+            category: true,
+            status: true,
+            remarks: true,
+            rawCompanyName: true,
             bank: {
               select: {
                 id: true,
@@ -49,27 +83,164 @@ export async function searchCompanies(query: string, limitNum: number = 25) {
           },
         },
       },
-      orderBy: {
-        name: "asc",
-      },
-    }),
-  ]);
+    });
 
-  // In-memory deduplication by baseName to ensure no duplicate companies in UI
-  const dedupedCompanies = new Map<string, any>();
-  for (const c of rawCompanies) {
-    const { baseName } = normalizeCompanyName(c.name);
-    if (!dedupedCompanies.has(baseName)) {
-      dedupedCompanies.set(baseName, { ...c, bankCategories: [...c.bankCategories] });
+    for (const c of allTokenMatches) {
+      candidateMap.set(c.id, c);
+    }
+  }
+
+  // ── PHASE 2: Prefix & Broad Contains Matches ──────────────────────────────────
+  const prefixOrConditions: any[] = [
+    // Direct exact / phrase prefix
+    { name: { startsWith: cleanQuery, mode: "insensitive" } },
+    ...(normalizedName ? [{ normalizedName: { startsWith: normalizedName } }] : []),
+    ...(baseName ? [{ baseName: { startsWith: baseName } }] : []),
+    // Substring contains
+    { name: { contains: cleanQuery, mode: "insensitive" } },
+    ...(aliasCompanyIds.length > 0 ? [{ id: { in: aliasCompanyIds } }] : []),
+  ];
+
+  // For multi-token query, if pool is small, also look up companies starting with primary token
+  if (tokens.length > 1 && candidateMap.size < 20 && tokens[0] && tokens[0].length >= 3) {
+    prefixOrConditions.push({ name: { startsWith: tokens[0], mode: "insensitive" } });
+  }
+
+  const prefixMatches = await prisma.company.findMany({
+    where: {
+      status: "ACTIVE",
+      ...extraWhere,
+      OR: prefixOrConditions,
+    },
+    take: candidatePoolLimit,
+    select: {
+      id: true,
+      name: true,
+      normalizedName: true,
+      baseName: true,
+      cin: true,
+      pincode: true,
+      city: true,
+      state: true,
+      bankCategories: {
+        select: {
+          id: true,
+          category: true,
+          status: true,
+          remarks: true,
+          rawCompanyName: true,
+          bank: {
+            select: {
+              id: true,
+              name: true,
+              code: true,
+              type: true,
+              logoUrl: true,
+            },
+          },
+        },
+      },
+    },
+  });
+
+  for (const c of prefixMatches) {
+    if (!candidateMap.has(c.id)) {
+      candidateMap.set(c.id, c);
+    }
+  }
+
+  // ── Deduplicate by baseName / normalizedName ─────────────────────────────────
+  const dedupedMap = new Map<string, any>();
+  for (const c of candidateMap.values()) {
+    const key = c.baseName || c.normalizedName || c.id;
+    if (!dedupedMap.has(key)) {
+      dedupedMap.set(key, { ...c, bankCategories: [...c.bankCategories] });
     } else {
-      const existing = dedupedCompanies.get(baseName);
+      const existing = dedupedMap.get(key);
       existing.bankCategories.push(...c.bankCategories);
     }
   }
 
-  const finalCompanies = Array.from(dedupedCompanies.values());
+  // ── Score & Rank with Central Relevance Engine ────────────────────────────────
+  const scored = Array.from(dedupedMap.values())
+    .map((c) => {
+      const rel = calculateCompanyRelevance(c.name, cleanQuery, c.normalizedName, c.baseName);
+      return {
+        ...c,
+        relevanceScore: rel.score,
+        matchType: rel.matchType,
+      };
+    })
+    .filter((c) => c.relevanceScore > 0);
 
-  return finalCompanies.map((c: any) => {
+  // Deterministic sorting:
+  // 1. Highest Relevance Score
+  // 2. Shorter / cleaner name (closer exactness)
+  // 3. Alphabetical tie-breaker
+  scored.sort((a, b) => {
+    if (b.relevanceScore !== a.relevanceScore) {
+      return b.relevanceScore - a.relevanceScore;
+    }
+    if (a.name.length !== b.name.length) {
+      return a.name.length - b.name.length;
+    }
+    return a.name.localeCompare(b.name);
+  });
+
+  return scored;
+}
+
+// ─── Main Public Search Endpoint ──────────────────────────────────────────────
+
+export async function searchCompanies(query: string, filters: CompanySearchFilters = {}) {
+  const cleanQuery = (query || "").trim();
+  if (!cleanQuery) return [];
+
+  const limitNum = Math.min(Math.max(1, Number(filters.limit) || 20), 100);
+  const pageNum = Math.max(1, Number(filters.page) || 1);
+  const skip = (pageNum - 1) * limitNum;
+
+  // Build optional attribute filters
+  const extraWhere: any = {};
+  if (filters.pincode) {
+    extraWhere.pincode = filters.pincode.trim();
+  }
+  if (filters.city) {
+    extraWhere.city = { contains: filters.city.trim(), mode: "insensitive" };
+  }
+  if (filters.state) {
+    extraWhere.state = { contains: filters.state.trim(), mode: "insensitive" };
+  }
+  if (filters.bankId || filters.category) {
+    extraWhere.bankCategories = {
+      some: {
+        ...(filters.bankId ? { bankId: filters.bankId } : {}),
+        ...(filters.category ? { category: filters.category.toUpperCase().trim() } : {}),
+      },
+    };
+  }
+
+  const candidatePoolLimit = Math.min(200, Math.max(100, (skip + limitNum) * 3));
+
+  // Run banks fetch and candidates ranking concurrently
+  const [allBanks, rankedCompanies] = await Promise.all([
+    prisma.bank.findMany({
+      where: { partnerStatus: "ACTIVE" },
+      orderBy: { priority: "asc" },
+      select: {
+        id: true,
+        name: true,
+        code: true,
+        type: true,
+        logoUrl: true,
+      },
+    }),
+    getRankedCompanyCandidates(cleanQuery, extraWhere, candidatePoolLimit),
+  ]);
+
+  const paginated = rankedCompanies.slice(skip, skip + limitNum);
+
+  return paginated.map((c: any) => {
     const categoryMap = new Map<string, any>();
     (c.bankCategories || []).forEach((bc: any) => {
       if (bc.bank?.id) {
@@ -111,6 +282,8 @@ export async function searchCompanies(query: string, limitNum: number = 25) {
     return {
       companyId: c.id,
       companyName: c.name,
+      relevanceScore: c.relevanceScore,
+      matchType: c.matchType,
       cin: c.cin,
       pincode: c.pincode,
       city: c.city,
@@ -120,12 +293,49 @@ export async function searchCompanies(query: string, limitNum: number = 25) {
   });
 }
 
+// ─── Company Autocomplete / Suggestions ───────────────────────────────────────
+
+export async function getCompanyAutocomplete(query: string) {
+  const cleanQuery = (query || "").trim();
+  if (!cleanQuery) return [];
+
+  // Use the exact same candidate retrieval & relevance scoring pipeline
+  const ranked = await getRankedCompanyCandidates(cleanQuery, {}, 80);
+
+  return ranked.slice(0, 10).map((c) => ({
+    id: c.id,
+    name: c.name,
+    city: c.city,
+    state: c.state,
+    relevanceScore: c.relevanceScore,
+    matchType: c.matchType,
+  }));
+}
+
+// ─── Single Company Detail by ID ──────────────────────────────────────────────
+
 export async function getCompanyById(id: string) {
   const company = await prisma.company.findUnique({
     where: { id },
-    include: {
+    select: {
+      id: true,
+      name: true,
+      cin: true,
+      pincode: true,
+      city: true,
+      state: true,
+      district: true,
+      status: true,
+      createdAt: true,
+      updatedAt: true,
       bankCategories: {
-        include: {
+        select: {
+          id: true,
+          category: true,
+          status: true,
+          source: true,
+          remarks: true,
+          updatedAt: true,
           bank: {
             select: {
               id: true,
@@ -166,46 +376,4 @@ export async function getCompanyById(id: string) {
       updatedAt: bc.updatedAt,
     })),
   };
-}
-
-export async function getCompanyAutocomplete(query: string) {
-  const cleanQuery = query.trim();
-  if (!cleanQuery) return [];
-
-  const { normalizedName } = normalizeCompanyName(cleanQuery);
-  
-  const matchedAliases = await prisma.companyAlias.findMany({
-    where: { alias: { startsWith: normalizedName } },
-    select: { companyId: true }
-  });
-  const aliasCompanyIds = matchedAliases.map(a => a.companyId);
-
-  const raw = await prisma.company.findMany({
-    where: {
-      OR: [
-        { name: { startsWith: cleanQuery, mode: "insensitive" } },
-        ...(normalizedName ? [{ normalizedName: { startsWith: normalizedName } }] : []),
-        ...(aliasCompanyIds.length > 0 ? [{ id: { in: aliasCompanyIds } }] : []),
-      ],
-    },
-    select: {
-      id: true,
-      name: true,
-      city: true,
-      state: true,
-    },
-    take: 10,
-    orderBy: { name: "asc" },
-  });
-
-  // Deduplicate for autocomplete
-  const deduped = new Map<string, any>();
-  for (const c of raw) {
-    const { baseName } = normalizeCompanyName(c.name);
-    if (!deduped.has(baseName)) {
-      deduped.set(baseName, c);
-    }
-  }
-
-  return Array.from(deduped.values()).slice(0, 10);
 }

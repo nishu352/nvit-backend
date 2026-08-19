@@ -365,7 +365,7 @@ async function processConfirmedImportBackground(
     columnName?: string,
     rawJson?: any
   ) {
-    if (errorBuffer.length >= 1000) return; // Cap at 1,000 errors max to prevent DB overload
+    if (errorBuffer.length >= 5000) return; // Cap at 5,000 errors max to prevent DB overload
     errorBuffer.push({
       importJobId: historyId,
       rowNumber: rowNum,
@@ -506,20 +506,43 @@ async function processConfirmedImportBackground(
     }
 
     // ── Step 2: Resolve Company IDs via Matching Hierarchy ────────────────
-    const allNormNames = validRows.map((r) => r.normalizedName);
-    const allBaseNames = Array.from(new Set(validRows.map((r) => r.baseName)));
+    const allNormNames = Array.from(new Set(validRows.map((r) => r.normalizedName).filter(Boolean)));
+    const allBaseNames = Array.from(new Set(validRows.map((r) => r.baseName).filter(Boolean)));
 
-    const existingCompanies = [];
+    const existingCompanies: { id: string; normalizedName: string; baseName: string | null }[] = [];
+    const seenCompanyIds = new Set<string>();
+
+    // 1. Query by exact normalizedName (Fastest & guarantees matching existing DB records)
+    for (let i = 0; i < allNormNames.length; i += 500) {
+      const normChunk = allNormNames.slice(i, i + 500);
+      const comps = await prisma.company.findMany({
+        where: { normalizedName: { in: normChunk } },
+        select: { id: true, normalizedName: true, baseName: true },
+      });
+      for (const c of comps) {
+        if (!seenCompanyIds.has(c.id)) {
+          seenCompanyIds.add(c.id);
+          existingCompanies.push(c);
+        }
+      }
+    }
+
+    // 2. Query by baseName (for Level 2 missing suffix matching)
     for (let i = 0; i < allBaseNames.length; i += 500) {
       const baseChunk = allBaseNames.slice(i, i + 500);
       const comps = await prisma.company.findMany({
         where: { baseName: { in: baseChunk } },
         select: { id: true, normalizedName: true, baseName: true },
       });
-      existingCompanies.push(...comps);
+      for (const c of comps) {
+        if (!seenCompanyIds.has(c.id)) {
+          seenCompanyIds.add(c.id);
+          existingCompanies.push(c);
+        }
+      }
     }
     
-    const existingAliases = [];
+    const existingAliases: { companyId: string; alias: string }[] = [];
     for (let i = 0; i < allNormNames.length; i += 500) {
       const normChunk = allNormNames.slice(i, i + 500);
       const aliases = await prisma.companyAlias.findMany({
@@ -530,44 +553,50 @@ async function processConfirmedImportBackground(
     }
 
     const companyMap = new Map<string, string>(); // validRow.id -> companyId
-    const newCompaniesToCreate = [];
+    const newCompaniesToCreate: { id: string; name: string; normalizedName: string; baseName: string; cin: string | null }[] = [];
 
-    const baseNameMap = new Map<string, { id: string, normalizedName: string, baseName: string | null }[]>();
+    const normMap = new Map<string, string>(); // normalizedName -> companyId
+    const aliasMap = new Map<string, string>(); // alias -> companyId
+    const baseNameMap = new Map<string, { id: string; normalizedName: string; baseName: string | null }[]>();
+
     for (const c of existingCompanies) {
-      if (!c.baseName) continue;
-      const arr = baseNameMap.get(c.baseName) || [];
-      arr.push(c);
-      baseNameMap.set(c.baseName, arr);
+      normMap.set(c.normalizedName, c.id);
+      if (c.baseName) {
+        const arr = baseNameMap.get(c.baseName) || [];
+        arr.push(c);
+        baseNameMap.set(c.baseName, arr);
+      }
+    }
+
+    for (const a of existingAliases) {
+      aliasMap.set(a.alias, a.companyId);
     }
 
     for (const r of validRows) {
       let resolvedCompanyId: string | null = null;
-      const candidates = baseNameMap.get(r.baseName) || [];
 
-      // Level 1: Exact Match (normalizedName or Alias)
-      const exactMatch = candidates.find(c => c.normalizedName === r.normalizedName);
-      if (exactMatch) {
-        resolvedCompanyId = exactMatch.id;
-      } else {
-        const aliasMatch = existingAliases.find(a => a.alias === r.normalizedName);
-        if (aliasMatch) {
-          resolvedCompanyId = aliasMatch.companyId;
-        }
+      // Level 1A: Exact Normalized Name in DB or earlier in file
+      if (normMap.has(r.normalizedName)) {
+        resolvedCompanyId = normMap.get(r.normalizedName)!;
       }
-
+      // Level 1B: Exact Alias Match
+      else if (aliasMap.has(r.normalizedName)) {
+        resolvedCompanyId = aliasMap.get(r.normalizedName)!;
+      }
       // Level 2: Missing Suffix Match (baseName)
-      if (!resolvedCompanyId && candidates.length > 0) {
-        const noSuffixCandidates = candidates.filter(c => c.normalizedName === c.baseName);
-        const hasSuffixCandidates = candidates.filter(c => c.normalizedName !== c.baseName);
+      else {
+        const candidates = baseNameMap.get(r.baseName) || [];
+        if (candidates.length > 0) {
+          const noSuffixCandidates = candidates.filter(c => c.normalizedName === c.baseName);
+          const hasSuffixCandidates = candidates.filter(c => c.normalizedName !== c.baseName);
 
-        const incomingHasNoSuffix = r.normalizedName === r.baseName;
-        
-        if (incomingHasNoSuffix && hasSuffixCandidates.length === 1) {
-          // Incoming: "WIPRO", DB: ["WIPROLTD"] -> Safe merge
-          resolvedCompanyId = hasSuffixCandidates[0].id;
-        } else if (!incomingHasNoSuffix && noSuffixCandidates.length === 1) {
-          // Incoming: "WIPRO LIMITED", DB: ["WIPRO"] -> Safe merge
-          resolvedCompanyId = noSuffixCandidates[0].id;
+          const incomingHasNoSuffix = r.normalizedName === r.baseName;
+          
+          if (incomingHasNoSuffix && hasSuffixCandidates.length === 1) {
+            resolvedCompanyId = hasSuffixCandidates[0].id;
+          } else if (!incomingHasNoSuffix && noSuffixCandidates.length === 1) {
+            resolvedCompanyId = noSuffixCandidates[0].id;
+          }
         }
       }
 
@@ -583,6 +612,8 @@ async function processConfirmedImportBackground(
           baseName: r.baseName,
           cin: r.cin,
         });
+        normMap.set(r.normalizedName, newId);
+        const candidates = baseNameMap.get(r.baseName) || [];
         candidates.push({ id: newId, normalizedName: r.normalizedName, baseName: r.baseName });
         baseNameMap.set(r.baseName, candidates);
       }
@@ -605,9 +636,18 @@ async function processConfirmedImportBackground(
           skipDuplicates: true,
         });
       } catch (err: any) {
-        const errMsg = `Database error saving companies (batch ${Math.floor(i / CHUNK) + 1})`;
-        console.error(`[Import ${historyId}] Company chunk ${Math.floor(i / CHUNK) + 1} failed:`, err.message);
-        failedCount += chunk.length;
+        console.warn(`[Import ${historyId}] Company chunk ${Math.floor(i / CHUNK) + 1} bulk insert failed, attempting row fallback:`, err.message);
+        for (const comp of chunk) {
+          try {
+            await prisma.company.upsert({
+              where: { normalizedName: comp.normalizedName },
+              create: comp,
+              update: {},
+            });
+          } catch {
+            failedCount++;
+          }
+        }
       }
     }
 
@@ -676,12 +716,71 @@ async function processConfirmedImportBackground(
         });
         processedCount += res.count;
       } catch (err: any) {
-        const errMsg = `Database error saving category mappings (batch ${Math.floor(i / CHUNK) + 1})`;
-        console.error(`[Import ${historyId}] Category chunk ${Math.floor(i / CHUNK) + 1} failed:`, err.message);
-        chunk.forEach((r, ri) =>
-          captureError(i + ri + 2, "CHUNK_FAILED", errMsg, `companyId: ${r.companyId}`, undefined, r.raw)
-        );
-        failedCount += chunk.length;
+        console.warn(`[Import ${historyId}] Category chunk ${Math.floor(i / CHUNK) + 1} createMany failed (${err.message}). Activating row resilience fallback...`);
+        // Resilient Fallback: Process each row individually with company ID recovery so 1 problematic row never fails the whole 500 rows
+        for (let ri = 0; ri < chunk.length; ri++) {
+          const r = chunk[ri];
+          const rowNum = i + ri + 2;
+          try {
+            let targetCompanyId = r.companyId;
+            const exists = await prisma.company.findUnique({
+              where: { id: targetCompanyId },
+              select: { id: true },
+            });
+
+            if (!exists) {
+              const norm = normalizeCompanyName(r.rawCompanyName).normalizedName;
+              const matchedComp = await prisma.company.findUnique({
+                where: { normalizedName: norm },
+                select: { id: true },
+              });
+
+              if (matchedComp) {
+                targetCompanyId = matchedComp.id;
+              } else {
+                const createdComp = await prisma.company.create({
+                  data: {
+                    name: r.rawCompanyName,
+                    normalizedName: norm,
+                    baseName: normalizeCompanyName(r.rawCompanyName).baseName,
+                  },
+                });
+                targetCompanyId = createdComp.id;
+              }
+            }
+
+            await prisma.companyBankCategory.upsert({
+              where: {
+                companyId_bankId: { companyId: targetCompanyId, bankId: r.bankId },
+              },
+              create: {
+                companyId: targetCompanyId,
+                bankId: r.bankId,
+                rawCompanyName: r.rawCompanyName,
+                category: r.category,
+                status: r.status,
+                remarks: r.remarks,
+              },
+              update: {
+                rawCompanyName: r.rawCompanyName,
+                category: r.category,
+                status: r.status,
+                remarks: r.remarks,
+              },
+            });
+            processedCount++;
+          } catch (rowErr: any) {
+            failedCount++;
+            captureError(
+              rowNum,
+              "ROW_FAILED",
+              `Database error saving category mapping: ${rowErr.message}`,
+              `companyId: ${r.companyId}`,
+              undefined,
+              r.raw
+            );
+          }
+        }
       }
 
       // Update progress every 10 chunks (~5000 rows)
