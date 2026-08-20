@@ -2,9 +2,19 @@ import { FastifyRequest, FastifyReply } from "fastify";
 
 export async function authenticate(request: FastifyRequest, reply: FastifyReply) {
   try {
-    await request.jwtVerify();
+    const token =
+      request.cookies?.token ||
+      request.cookies?.nvit_token ||
+      (request.headers.authorization ? request.headers.authorization.replace(/^Bearer\s+/i, "") : null);
+
+    if (!token) {
+      return reply.status(401).send({ error: true, message: "Authentication required: No token provided" });
+    }
+
+    const decoded = await request.server.jwt.verify(token);
+    request.user = decoded;
   } catch (err) {
-    reply.status(401).send({ error: true, message: "Unauthorized access token" });
+    return reply.status(401).send({ error: true, message: "Unauthorized access token or expired session" });
   }
 }
 

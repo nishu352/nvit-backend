@@ -3,19 +3,21 @@ import cors from "@fastify/cors";
 import helmet from "@fastify/helmet";
 import rateLimit from "@fastify/rate-limit";
 import jwt from "@fastify/jwt";
+import cookie from "@fastify/cookie";
 import multipart from "@fastify/multipart";
 import fastifyStatic from "@fastify/static";
 import path from "path";
 import fs from "fs";
 import dotenv from "dotenv";
 
-import { prisma, checkDatabaseHealth } from "./config/prisma.js";
+import { prisma, checkDatabaseHealth, clearStaleConnections } from "./config/prisma.js";
 import { authRoutes } from "./modules/auth/auth.routes.js";
 import { companyRoutes } from "./modules/company/company.routes.js";
 import { pincodeRoutes } from "./modules/pincode/pincode.routes.js";
 import { loanRoutes } from "./modules/loan/loan.routes.js";
 import { importRoutes } from "./modules/import/import.routes.js";
 import { adminRoutes } from "./modules/admin/admin.routes.js";
+import { feedbackRoutes } from "./modules/feedback/feedback.routes.js";
 
 dotenv.config();
 
@@ -62,7 +64,7 @@ export async function buildApp() {
           hostname === "127.0.0.1" ||
           hostname === "nvit.space" ||
           hostname.endsWith(".nvit.space") ||
-          hostname.endsWith(".vercel.app")
+          /^nvit(-[a-z0-9-]+)?\.vercel\.app$/.test(hostname)
         ) {
           cb(null, true);
           return;
@@ -78,6 +80,11 @@ export async function buildApp() {
   await app.register(rateLimit, {
     max: 200,
     timeWindow: "1 minute",
+  });
+
+  await app.register(cookie, {
+    secret: process.env.COOKIE_SECRET || "nvit-enterprise-cookie-signing-secret-2026",
+    parseOptions: {},
   });
 
   await app.register(jwt, {
@@ -109,6 +116,7 @@ export async function buildApp() {
   await app.register(loanRoutes);
   await app.register(importRoutes);
   await app.register(adminRoutes);
+  await app.register(feedbackRoutes);
 
   // ── Database Health & Readiness Endpoints ─────────────────────────────────
 
@@ -183,21 +191,32 @@ export async function buildApp() {
     };
   });
 
-  // Global Error Handler — ensures zero credential leaks
+  // Global Error Handler — ensures zero credential or internal path leaks
   app.setErrorHandler((error: any, request, reply) => {
     app.log.error(error);
-    const statusCode = error.statusCode || 500;
-    
-    // Sanitize message: never leak database URLs, connection strings, or system paths
-    let safeMessage = error.message || "Internal Server Error";
-    if (safeMessage.includes("postgresql://") || safeMessage.includes("password")) {
-      safeMessage = "Database operation error";
+    const statusCode = error.statusCode || (error.name === "ValidationError" ? 400 : 500);
+
+    // Sanitize message: never leak database URLs, connection strings, system paths, or raw SQL
+    let safeMessage = error.message || "An unexpected error occurred.";
+    if (
+      statusCode === 500 ||
+      safeMessage.includes("postgresql://") ||
+      safeMessage.includes("prisma") ||
+      safeMessage.includes("SELECT") ||
+      safeMessage.includes("INSERT") ||
+      safeMessage.includes("UPDATE") ||
+      safeMessage.includes("DELETE") ||
+      safeMessage.includes("password") ||
+      safeMessage.includes("JWT") ||
+      safeMessage.includes("secret")
+    ) {
+      safeMessage = statusCode === 500 ? "Internal server error. Please contact support@nvit.space if this persists." : "Operation error.";
     }
 
     reply.status(statusCode).send({
-      error: true,
+      success: false,
+      error: safeMessage,
       statusCode,
-      message: safeMessage,
     });
   });
 
@@ -237,7 +256,12 @@ if (process.env.NODE_ENV !== "test") {
         }
         app.log.info(`🚀 Enterprise Backend REST Server listening on ${address}`);
 
-        // Startup background cleanup: resolve any imports marked as PROCESSING before crash/restart
+        // Startup cleanup 1: clear zombie DB connections from force-killed previous processes
+        clearStaleConnections().catch((e) => {
+          console.warn("Startup connection cleanup skipped:", e?.message || e);
+        });
+
+        // Startup cleanup 2: resolve any imports marked as PROCESSING before crash/restart
         prisma.importHistory.updateMany({
           where: { status: "PROCESSING" },
           data: {

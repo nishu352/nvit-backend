@@ -468,3 +468,30 @@ model Session {
   @@index([userId])
   @@map("sessions")
 }
+
+// ─── Feedback & Complaints ───────────────────────────────────────────────────
+
+model FeedbackTicket {
+  id           String    @id @default(uuid())
+  ticketNumber String    @unique
+  type         String    @default("FEEDBACK") // COMPLAINT | FEEDBACK | GRIEVANCE | SUGGESTION | SUPPORT
+  name         String
+  email        String
+  phone        String?
+  subject      String
+  message      String
+  status       String    @default("PENDING") // PENDING | IN_REVIEW | RESOLVED | REJECTED
+  priority     String    @default("NORMAL") // LOW | NORMAL | HIGH | URGENT
+  adminNotes   String?
+  resolvedAt   DateTime?
+  ipAddress    String?
+  userAgent    String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@index([status])
+  @@index([type])
+  @@index([createdAt])
+  @@map("feedback_tickets")
+}
+

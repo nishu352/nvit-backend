@@ -15,6 +15,15 @@ export async function loginHandler(request: FastifyRequest, reply: FastifyReply)
       { expiresIn: process.env.JWT_EXPIRES_IN || "1d" }
     );
 
+    const isProd = process.env.NODE_ENV === "production";
+    reply.setCookie("token", token, {
+      path: "/",
+      httpOnly: true,
+      secure: isProd,
+      sameSite: isProd ? "none" : "lax",
+      maxAge: 24 * 60 * 60, // 24 hours
+    });
+
     return reply.send({
       success: true,
       message: "Login successful",
@@ -26,6 +35,20 @@ export async function loginHandler(request: FastifyRequest, reply: FastifyReply)
   } catch (err: any) {
     return reply.status(401).send({ error: true, message: err.message || "Invalid credentials" });
   }
+}
+
+export async function logoutHandler(request: FastifyRequest, reply: FastifyReply) {
+  const isProd = process.env.NODE_ENV === "production";
+  reply.clearCookie("token", {
+    path: "/",
+    httpOnly: true,
+    secure: isProd,
+    sameSite: isProd ? "none" : "lax",
+  });
+  return reply.send({
+    success: true,
+    message: "Logged out successfully",
+  });
 }
 
 export async function registerHandler(request: FastifyRequest, reply: FastifyReply) {
