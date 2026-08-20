@@ -21,8 +21,13 @@ async function seedPincodeMaster() {
     process.exit(1);
   }
 
-  console.log(`Starting ingestion of Pan-India Pincodes from: ${filePath}`);
+  console.log(`Starting replacement of Pan-India Pincode Master from: ${filePath}`);
   const startTime = Date.now();
+
+  // 1. Wipe existing master data to ensure a clean replace
+  console.log("Wiping existing PincodeMaster records for full replace...");
+  const deleteResult = await prisma.pincodeMaster.deleteMany({});
+  console.log(`Cleared ${deleteResult.count.toLocaleString()} old records.`);
 
   const fileStream = fs.createReadStream(filePath);
   const rl = readline.createInterface({ input: fileStream, crlfDelay: Infinity });
@@ -45,7 +50,7 @@ async function seedPincodeMaster() {
     lineCount++;
     if (lineCount === 1) continue; // Skip header
 
-    // Quick regex for CSV with quotes
+    // Parse CSV line handling quotes
     const match = line.match(/(?:^|,)("(?:[^"]|"")*"|[^,]*)/g);
     if (!match || match.length < 9) continue;
 
@@ -53,10 +58,10 @@ async function seedPincodeMaster() {
       m.replace(/^,/, "").replace(/^"/, "").replace(/"$/, "").trim()
     );
 
-    const officeName = parts[3];
-    const rawPincode = parts[4];
-    const district = parts[7];
-    const state = parts[8];
+    const officeName = parts[3]; // officename column
+    const rawPincode = parts[4]; // pincode column
+    const district = parts[7];   // district column
+    const state = parts[8];      // statename column
 
     const cleanPincode = String(rawPincode || "").padStart(6, "0");
     if (!cleanPincode || cleanPincode.length !== 6 || isNaN(Number(cleanPincode))) {
@@ -65,7 +70,7 @@ async function seedPincodeMaster() {
 
     const cleanState = toTitleCase(state);
     const cleanDistrict = toTitleCase(district);
-    const cleanOffice = officeName ? officeName.replace(/ B\.O$| S\.O$| H\.O$/i, "").trim() : "";
+    const cleanOffice = officeName.trim();
 
     if (!pincodeMap.has(cleanPincode)) {
       const officeSet = new Set<string>();
@@ -75,19 +80,19 @@ async function seedPincodeMaster() {
         pincode: cleanPincode,
         state: cleanState,
         district: cleanDistrict,
-        city: cleanDistrict, // Primary city defaults to district
-        primaryOffice: cleanOffice || cleanDistrict,
+        city: cleanDistrict,
+        primaryOffice: cleanOffice,
         offices: officeSet,
       });
     } else {
       const entry = pincodeMap.get(cleanPincode)!;
-      if (cleanOffice && entry.offices.size < 20) {
+      if (cleanOffice && entry.offices.size < 25) {
         entry.offices.add(cleanOffice);
       }
     }
   }
 
-  console.log(`Parsed ${lineCount.toLocaleString()} post offices.`);
+  console.log(`Parsed ${lineCount.toLocaleString()} post offices from CSV.`);
   console.log(`Aggregated ${pincodeMap.size.toLocaleString()} unique 6-digit Indian Pincodes.`);
 
   const records = Array.from(pincodeMap.values()).map((p) => ({
@@ -103,7 +108,7 @@ async function seedPincodeMaster() {
   const CHUNK_SIZE = 2000;
   let inserted = 0;
 
-  console.log(`Inserting into database in chunks of ${CHUNK_SIZE}...`);
+  console.log(`Inserting fresh master records into database in chunks of ${CHUNK_SIZE}...`);
   for (let i = 0; i < records.length; i += CHUNK_SIZE) {
     const chunk = records.slice(i, i + CHUNK_SIZE);
     const result = await prisma.pincodeMaster.createMany({
@@ -115,7 +120,7 @@ async function seedPincodeMaster() {
   }
 
   const durationSec = ((Date.now() - startTime) / 1000).toFixed(2);
-  console.log(`\n🎉 Successfully loaded ${inserted.toLocaleString()} Pan-India Pincodes into database in ${durationSec}s!`);
+  console.log(`\n🎉 Successfully replaced master directory with ${inserted.toLocaleString()} Pan-India Pincodes in ${durationSec}s!`);
 }
 
 seedPincodeMaster()
