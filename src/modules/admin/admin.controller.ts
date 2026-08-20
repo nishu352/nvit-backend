@@ -6,6 +6,8 @@ import {
   updateBank,
   deleteBank,
   toggleBankStatus,
+  toggleBankApply,
+  saveBankLogoFile,
   clearBankCompanies,
   clearBankPincodes,
   getAllUsers,
@@ -109,6 +111,36 @@ export async function toggleBankStatusHandler(request: FastifyRequest, reply: Fa
     return reply.send({ success: true, data: bank });
   } catch (err: any) {
     return reply.status(400).send({ error: true, message: err.message || "Failed to toggle status" });
+  }
+}
+
+export async function toggleBankApplyHandler(request: FastifyRequest, reply: FastifyReply) {
+  const { id } = request.params as { id: string };
+
+  try {
+    const bank = await toggleBankApply(id);
+    return reply.send({ success: true, data: bank });
+  } catch (err: any) {
+    return reply.status(400).send({ error: true, message: err.message || "Failed to toggle apply status" });
+  }
+}
+
+export async function uploadBankLogoHandler(request: FastifyRequest, reply: FastifyReply) {
+  try {
+    const data = await request.file();
+    if (!data) {
+      return reply.status(400).send({ error: true, message: "No logo file provided" });
+    }
+
+    const buffer = await data.toBuffer();
+    if (buffer.length > 5 * 1024 * 1024) {
+      return reply.status(400).send({ error: true, message: "File size exceeds 5MB limit" });
+    }
+
+    const logoUrl = await saveBankLogoFile(buffer, data.filename);
+    return reply.send({ success: true, url: logoUrl });
+  } catch (err: any) {
+    return reply.status(400).send({ error: true, message: err.message || "Failed to upload logo" });
   }
 }
 

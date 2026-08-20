@@ -83,6 +83,8 @@ model Bank {
   displayOrder       Int                     @default(0)
   eligibility        String?
   processingFee      Float                   @default(0.0)
+  applyEnabled       Boolean                 @default(false)
+  applyUrl           String?
   createdAt          DateTime                @default(now())
   updatedAt          DateTime                @updatedAt
   companyCategories  CompanyBankCategory[]

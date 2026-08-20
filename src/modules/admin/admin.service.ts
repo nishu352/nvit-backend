@@ -1,6 +1,8 @@
 import { prisma } from "../../config/prisma.js";
 import { normalizeCompanyName } from "../../utils/normalize.js";
 import { calculateCompanyRelevance, tokenize } from "../../utils/relevanceRanker.js";
+import path from "path";
+import fs from "fs";
 
 let cachedStats: { data: any; expiry: number } | null = null;
 
@@ -204,33 +206,113 @@ export async function getAllBanks() {
   });
 }
 
-export async function createBank(data: { name: string; code: string; type: "BANK" | "NBFC"; logoUrl?: string }) {
+export function validateRedirectUrl(url?: string | null): string | null {
+  if (!url) return null;
+  const trimmed = url.trim();
+  if (!trimmed) return null;
+
+  // Must start with http://, https://, or / (internal route)
+  if (trimmed.startsWith("/") || trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
+    return trimmed;
+  }
+  throw new Error("Invalid Redirect URL format. Must start with http://, https://, or / (e.g. /loan-apply?bank=...)");
+}
+
+export async function createBank(data: {
+  name: string;
+  code: string;
+  type: "BANK" | "NBFC";
+  logoUrl?: string | null;
+  applyEnabled?: boolean;
+  applyUrl?: string | null;
+  priority?: number;
+  partnerStatus?: string;
+  displayOrder?: number;
+  eligibility?: string;
+  processingFee?: number;
+}) {
+  const applyUrl = validateRedirectUrl(data.applyUrl);
   return await prisma.bank.create({
     data: {
       name: data.name.trim(),
       code: data.code.toUpperCase().trim(),
       type: data.type,
       logoUrl: data.logoUrl || null,
+      applyEnabled: Boolean(data.applyEnabled),
+      applyUrl: applyUrl,
+      priority: data.priority ?? 0,
+      partnerStatus: data.partnerStatus ?? "ACTIVE",
+      displayOrder: data.displayOrder ?? 0,
+      eligibility: data.eligibility || null,
+      processingFee: data.processingFee ?? 0.0,
     },
   });
 }
 
-export async function updateBank(id: string, data: { name?: string; code?: string; type?: "BANK" | "NBFC"; logoUrl?: string; isActive?: boolean; priority?: number; partnerStatus?: string; displayOrder?: number; eligibility?: string; processingFee?: number }) {
+export async function updateBank(
+  id: string,
+  data: {
+    name?: string;
+    code?: string;
+    type?: "BANK" | "NBFC";
+    logoUrl?: string | null;
+    isActive?: boolean;
+    priority?: number;
+    partnerStatus?: string;
+    displayOrder?: number;
+    eligibility?: string;
+    processingFee?: number;
+    applyEnabled?: boolean;
+    applyUrl?: string | null;
+  }
+) {
+  let applyUrl = undefined;
+  if (data.applyUrl !== undefined) {
+    applyUrl = validateRedirectUrl(data.applyUrl);
+  }
+
   return await prisma.bank.update({
     where: { id },
     data: {
       name: data.name?.trim(),
       code: data.code?.toUpperCase().trim(),
       type: data.type,
-      logoUrl: data.logoUrl,
+      logoUrl: data.logoUrl !== undefined ? (data.logoUrl || null) : undefined,
       isActive: data.isActive,
       priority: data.priority,
       partnerStatus: data.partnerStatus,
       displayOrder: data.displayOrder,
       eligibility: data.eligibility,
       processingFee: data.processingFee,
+      applyEnabled: data.applyEnabled,
+      applyUrl: applyUrl,
     },
   });
+}
+
+export async function toggleBankApply(id: string) {
+  const bank = await prisma.bank.findUnique({ where: { id } });
+  if (!bank) throw new Error("Bank not found");
+  return await prisma.bank.update({
+    where: { id },
+    data: { applyEnabled: !bank.applyEnabled },
+  });
+}
+
+export async function saveBankLogoFile(buffer: Buffer, originalFilename: string): Promise<string> {
+  const uploadsDir = path.join(process.cwd(), "public", "uploads", "logos");
+  if (!fs.existsSync(uploadsDir)) {
+    fs.mkdirSync(uploadsDir, { recursive: true });
+  }
+
+  const ext = path.extname(originalFilename) || ".png";
+  const cleanExt = [".png", ".jpg", ".jpeg", ".webp", ".svg"].includes(ext.toLowerCase()) ? ext.toLowerCase() : ".png";
+  const baseName = path.basename(originalFilename, ext).replace(/[^a-zA-Z0-9_-]/g, "_");
+  const fileName = `${Date.now()}-${baseName}${cleanExt}`;
+  const filePath = path.join(uploadsDir, fileName);
+
+  fs.writeFileSync(filePath, buffer);
+  return `/uploads/logos/${fileName}`;
 }
 
 export async function deleteBank(id: string) {

@@ -6,6 +6,8 @@ import {
   updateBankHandler,
   deleteBankHandler,
   toggleBankStatusHandler,
+  toggleBankApplyHandler,
+  uploadBankLogoHandler,
   clearBankCompaniesHandler,
   clearBankPincodesHandler,
   getUsersHandler,
@@ -74,6 +76,8 @@ export async function adminRoutes(app: FastifyInstance) {
   app.put("/api/v1/admin/banks/:id", writeOpsHandlers, updateBankHandler);
   app.delete("/api/v1/admin/banks/:id", writeOpsHandlers, deleteBankHandler);
   app.patch("/api/v1/admin/banks/:id/toggle", writeOpsHandlers, toggleBankStatusHandler);
+  app.patch("/api/v1/admin/banks/:id/toggle-apply", writeOpsHandlers, toggleBankApplyHandler);
+  app.post("/api/v1/admin/banks/upload-logo", writeOpsHandlers, uploadBankLogoHandler);
   app.delete("/api/v1/admin/banks/:id/data/companies", writeOpsHandlers, clearBankCompaniesHandler);
   app.delete("/api/v1/admin/banks/:id/data/pincodes", writeOpsHandlers, clearBankPincodesHandler);
 
