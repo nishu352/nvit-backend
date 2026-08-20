@@ -186,6 +186,26 @@ model PincodeServiceability {
   @@map("pincode_serviceabilities")
 }
 
+// ─── Pan-India Pincode Master Directory ───────────────────────────────────────
+
+model PincodeMaster {
+  id            String   @id @default(uuid())
+  pincode       String   @unique
+  state         String
+  district      String
+  city          String?
+  primaryOffice String?
+  allOffices    String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @default(now()) @updatedAt
+
+  @@index([pincode])
+  @@index([state])
+  @@index([district])
+  @@index([city])
+  @@map("pincode_masters")
+}
+
 // ─── Loan Applications (Leads) ────────────────────────────────────────────────
 
 model LoanApplication {

@@ -1032,6 +1032,32 @@ async function processPincodeImportBackground(
     let invalidCount = 0;
     let skippedCount = 0;
 
+    // ── Auto-Enrichment from Pan-India Pincode Master Directory ──────────────
+    const allPins = Array.from(
+      new Set(
+        rawRows
+          .map((r) => (mapping.pincode ? (r[mapping.pincode] || "").trim() : ""))
+          .filter((p) => p.length >= 3)
+      )
+    );
+
+    const masterMap = new Map<
+      string,
+      { state: string; district: string; city: string | null; primaryOffice: string | null }
+    >();
+
+    for (let i = 0; i < allPins.length; i += 1000) {
+      const pinChunk = allPins.slice(i, i + 1000);
+      const paddedChunk = pinChunk.map((p) => p.padStart(6, "0"));
+      const masters = await prisma.pincodeMaster.findMany({
+        where: { pincode: { in: [...pinChunk, ...paddedChunk] } },
+        select: { pincode: true, state: true, district: true, city: true, primaryOffice: true },
+      });
+      for (const m of masters) {
+        masterMap.set(m.pincode, m);
+      }
+    }
+
     for (let rowIdx = 0; rowIdx < rawRows.length; rowIdx++) {
       const row = rawRows[rowIdx];
       const rowNum = rowIdx + 2;
@@ -1049,11 +1075,19 @@ async function processPincodeImportBackground(
       }
       seen.add(rawPin);
 
-      // Parse booleans and other fields safely
+      // Parse user/sheet provided fields
       const rawState = mapping.state ? (row[mapping.state] || "").trim().substring(0, 50) : null;
       const rawCity = mapping.city ? (row[mapping.city] || "").trim().substring(0, 50) : null;
       const rawArea = mapping.area ? (row[mapping.area] || "").trim().substring(0, 100) : null;
       const rawCat = mapping.category ? (row[mapping.category] || "").trim().toUpperCase() : null;
+
+      // Auto-Enrich from Pan-India Master Directory if sheet has blank/missing values
+      const cleanPin = rawPin.padStart(6, "0");
+      const master = masterMap.get(cleanPin) || masterMap.get(rawPin);
+
+      const resolvedState = rawState || master?.state || null;
+      const resolvedCity = rawCity || master?.city || master?.district || null;
+      const resolvedArea = rawArea || master?.primaryOffice || null;
       
       const servStr = mapping.serviceable ? (row[mapping.serviceable] || "").trim().toLowerCase() : "";
       const isServiceable = servStr === "yes" || servStr === "true" || servStr === "1" || servStr === "active" || servStr === "y";
@@ -1065,9 +1099,9 @@ async function processPincodeImportBackground(
         id: randomUUID(),
         bankId,
         pincode: rawPin,
-        state: rawState,
-        city: rawCity,
-        area: rawArea,
+        state: resolvedState,
+        city: resolvedCity,
+        area: resolvedArea,
         isServiceable: mapping.serviceable ? isServiceable : true,
         isNegative: mapping.negative ? isNegative : false,
         category: rawCat || "REGULAR"
