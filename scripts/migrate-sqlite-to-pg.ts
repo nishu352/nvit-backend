@@ -1,6 +1,6 @@
 #!/usr/bin/env tsx
 /**
- * FINOLINK — SQLite → Supabase PostgreSQL Migration (FAST VERSION)
+ * NVIT.SPACE — SQLite → PostgreSQL Migration (FAST VERSION)
  *
  * Uses createMany + skipDuplicates for bulk inserts — orders of magnitude
  * faster than row-by-row upserts. Safe to re-run.

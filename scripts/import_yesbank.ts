@@ -43,7 +43,7 @@ function normalizeCategory(raw: string): { category: string; status: string } {
 
 async function main() {
   console.log("═══════════════════════════════════════════════════════");
-  console.log("  FINOLINK — Yes Bank Direct Import Script");
+  console.log("  NVIT.SPACE — Yes Bank Direct Import Script");
   console.log("═══════════════════════════════════════════════════════\n");
 
   // ── 1. Find Yes Bank ─────────────────────────────────────────────────────

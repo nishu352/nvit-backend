@@ -20,18 +20,7 @@ export async function getAdminDashboardStats() {
     monthStart.setHours(0, 0, 0, 0);
 
     const [
-      totalBanks,
-      totalCompanies,
-      totalPincodes,
-      totalApplications,
-      todaysLeads,
-      pendingLeads,
-      approvedLeads,
-      rejectedLeads,
-      todaysSearches,
-      monthlySearches,
-      excelUploads,
-      activeUsers,
+      countsRaw,
       latestImports,
       latestLeads,
       recentActivities,
@@ -40,64 +29,75 @@ export async function getAdminDashboardStats() {
       maintenanceSetting,
       storageSetting,
     ] = await Promise.all([
-      prisma.bank.count(),
-      prisma.company.count(),
-      prisma.pincodeServiceability.count(),
-      prisma.loanApplication.count(),
-      prisma.loanApplication.count({ where: { createdAt: { gte: todayStart } } }),
-      prisma.loanApplication.count({
-        where: {
-          status: {
-            in: ["FRESH", "ASSIGNED", "CONTACTED", "INTERESTED", "DOCUMENTS_PENDING", "BANK_SUBMITTED"],
-          },
-        },
+      prisma.$queryRawUnsafe<any[]>(
+        `
+        SELECT
+          (SELECT COUNT(*)::int FROM "Bank") AS total_banks,
+          (SELECT COUNT(*)::int FROM "Company") AS total_companies,
+          (SELECT COUNT(*)::int FROM "PincodeServiceability") AS total_pincodes,
+          (SELECT COUNT(*)::int FROM "LoanApplication") AS total_applications,
+          (SELECT COUNT(*)::int FROM "LoanApplication" WHERE "createdAt" >= $1) AS todays_leads,
+          (SELECT COUNT(*)::int FROM "LoanApplication" WHERE "status" IN ('FRESH', 'ASSIGNED', 'CONTACTED', 'INTERESTED', 'DOCUMENTS_PENDING', 'BANK_SUBMITTED')) AS pending_leads,
+          (SELECT COUNT(*)::int FROM "LoanApplication" WHERE "status" = 'APPROVED') AS approved_leads,
+          (SELECT COUNT(*)::int FROM "LoanApplication" WHERE "status" = 'REJECTED') AS rejected_leads,
+          (SELECT COUNT(*)::int FROM "AuditLog" WHERE "action" IN ('COMPANY_SEARCH', 'PINCODE_CHECK', 'COMPANY_CHECK') AND "createdAt" >= $1) AS todays_searches,
+          (SELECT COUNT(*)::int FROM "AuditLog" WHERE "action" IN ('COMPANY_SEARCH', 'PINCODE_CHECK', 'COMPANY_CHECK') AND "createdAt" >= $2) AS monthly_searches,
+          (SELECT COUNT(*)::int FROM "ImportHistory") AS excel_uploads,
+          (SELECT COUNT(*)::int FROM "User" WHERE "isActive" = true) AS active_users,
+          (SELECT COUNT(DISTINCT "category")::int FROM "CompanyBankCategory") AS total_categories;
+      `,
+        todayStart,
+        monthStart
+      ).catch((e) => {
+        console.warn("Raw dashboard count query error:", e.message);
+        return null;
       }),
-      prisma.loanApplication.count({ where: { status: "APPROVED" } }),
-      prisma.loanApplication.count({ where: { status: "REJECTED" } }),
-      prisma.auditLog.count({
-        where: {
-          action: { in: ["COMPANY_SEARCH", "PINCODE_CHECK", "COMPANY_CHECK"] },
-          createdAt: { gte: todayStart },
-        },
-      }),
-      prisma.auditLog.count({
-        where: {
-          action: { in: ["COMPANY_SEARCH", "PINCODE_CHECK", "COMPANY_CHECK"] },
-          createdAt: { gte: monthStart },
-        },
-      }),
-      prisma.importHistory.count(),
-      prisma.user.count({ where: { isActive: true } }),
-      prisma.importHistory.findMany({
-        take: 5,
-        orderBy: { createdAt: "desc" },
-        include: { bank: { select: { name: true } } },
-      }),
-      prisma.loanApplication.findMany({
-        take: 5,
-        orderBy: { createdAt: "desc" },
-      }),
-      prisma.auditLog.findMany({
-        take: 8,
-        orderBy: { createdAt: "desc" },
-      }),
-      prisma.bankPolicy.findMany({
-        take: 5,
-        orderBy: { updatedAt: "desc" },
-        include: { bank: { select: { name: true } } },
-      }),
-      prisma.marketingSettings.findUnique({ where: { key: "google_ads" } }),
-      prisma.systemSettings.findUnique({ where: { key: "maintenance" } }),
-      prisma.systemSettings.findUnique({ where: { key: "storage" } }),
+      prisma.importHistory
+        .findMany({
+          take: 5,
+          orderBy: { createdAt: "desc" },
+          include: { bank: { select: { name: true } } },
+        })
+        .catch(() => []),
+      prisma.loanApplication
+        .findMany({
+          take: 5,
+          orderBy: { createdAt: "desc" },
+        })
+        .catch(() => []),
+      prisma.auditLog
+        .findMany({
+          take: 8,
+          orderBy: { createdAt: "desc" },
+        })
+        .catch(() => []),
+      prisma.bankPolicy
+        .findMany({
+          take: 5,
+          orderBy: { updatedAt: "desc" },
+          include: { bank: { select: { name: true } } },
+        })
+        .catch(() => []),
+      prisma.marketingSettings.findUnique({ where: { key: "google_ads" } }).catch(() => null),
+      prisma.systemSettings.findUnique({ where: { key: "maintenance" } }).catch(() => null),
+      prisma.systemSettings.findUnique({ where: { key: "storage" } }).catch(() => null),
     ]);
 
-    // Calculate unique category strings
-    const categoriesCount = await prisma.companyBankCategory
-      .findMany({
-        select: { category: true },
-        distinct: ["category"],
-      })
-      .then((res) => res.length);
+    const row = countsRaw && countsRaw[0] ? countsRaw[0] : null;
+
+    const totalBanks = row ? Number(row.total_banks || 0) : await prisma.bank.count().catch(() => 0);
+    const totalCompanies = row ? Number(row.total_companies || 0) : await prisma.company.count().catch(() => 0);
+    const totalPincodes = row ? Number(row.total_pincodes || 0) : await prisma.pincodeServiceability.count().catch(() => 0);
+    const totalApplications = row ? Number(row.total_applications || 0) : await prisma.loanApplication.count().catch(() => 0);
+    const todaysLeads = row ? Number(row.todays_leads || 0) : 0;
+    const pendingLeads = row ? Number(row.pending_leads || 0) : 0;
+    const approvedLeads = row ? Number(row.approved_leads || 0) : 0;
+    const rejectedLeads = row ? Number(row.rejected_leads || 0) : 0;
+    const todaysSearches = row ? Number(row.todays_searches || 0) : 0;
+    const monthlySearches = row ? Number(row.monthly_searches || 0) : 0;
+    const excelUploads = row ? Number(row.excel_uploads || 0) : await prisma.importHistory.count().catch(() => 0);
+    const activeUsers = row ? Number(row.active_users || 0) : 1;
+    const totalCategories = row ? Number(row.total_categories || 0) : 0;
 
     // Compute System Health parameters
     const systemHealth = {
@@ -109,10 +109,10 @@ export async function getAdminDashboardStats() {
 
     // Parse Marketing and Settings JSON configurations
     const googleAdsEnabled = googleAdsSetting
-      ? (googleAdsSetting.value as any).enabled
+      ? (googleAdsSetting.value as any)?.enabled ?? false
       : false;
     const maintenanceEnabled = maintenanceSetting
-      ? (maintenanceSetting.value as any).enabled
+      ? (maintenanceSetting.value as any)?.enabled ?? false
       : false;
     const storageUsage = storageSetting
       ? (storageSetting.value as any)
@@ -122,7 +122,7 @@ export async function getAdminDashboardStats() {
       metrics: {
         totalBanks,
         totalCompanies,
-        totalCategories: categoriesCount,
+        totalCategories,
         totalPincodes,
         totalApplications,
         todaysLeads,
@@ -135,7 +135,7 @@ export async function getAdminDashboardStats() {
         activeUsers,
         googleAdsStatus: googleAdsEnabled ? "ACTIVE" : "DISABLED",
         websiteStatus: maintenanceEnabled ? "MAINTENANCE" : "ACTIVE",
-        storageUsage: `${storageUsage.currentUsageMb} MB / ${storageUsage.maxLimitMb} MB`,
+        storageUsage: `${storageUsage.currentUsageMb || 2.1} MB / ${storageUsage.maxLimitMb || 1024} MB`,
         systemHealth: systemHealth.status,
       },
       latestImports,
@@ -147,36 +147,27 @@ export async function getAdminDashboardStats() {
 
     cachedStats = {
       data: result,
-      expiry: Date.now() + 30 * 1000,
+      expiry: Date.now() + 60 * 1000,
     };
 
     return result;
   } catch (err: any) {
     console.error("Dashboard stats query failed:", err.message);
 
-    // Fallback: Query real counts individually so real data is ALWAYS displayed
-    const [totalBanks, totalCompanies, totalPincodes, totalApplications, excelUploads] = await Promise.all([
-      prisma.bank.count().catch(() => 0),
-      prisma.company.count().catch(() => 0),
-      prisma.pincodeServiceability.count().catch(() => 0),
-      prisma.loanApplication.count().catch(() => 0),
-      prisma.importHistory.count().catch(() => 0),
-    ]);
-
     return {
       metrics: {
-        totalBanks,
-        totalCompanies,
+        totalBanks: 0,
+        totalCompanies: 0,
         totalCategories: 0,
-        totalPincodes,
-        totalApplications,
+        totalPincodes: 0,
+        totalApplications: 0,
         todaysLeads: 0,
         pendingLeads: 0,
         approvedLeads: 0,
         rejectedLeads: 0,
         todaysSearches: 0,
         monthlySearches: 0,
-        excelUploads,
+        excelUploads: 0,
         activeUsers: 1,
         googleAdsStatus: "DISABLED",
         websiteStatus: "ACTIVE",

@@ -7,13 +7,13 @@ async function main() {
   console.log("🌱 Starting seed script...");
 
   // Seed Default Super Admin User
-  const adminPasswordHash = await bcrypt.hash("Admin@12345", 10);
+  const adminPasswordHash = await bcrypt.hash("@#$512Aui", 10);
   const admin = await prisma.user.upsert({
-    where: { email: "admin@finolink.co" },
-    update: {},
+    where: { email: "admin@nvit.space" },
+    update: { password: adminPasswordHash },
     create: {
-      email: "admin@finolink.co",
-      name: "FinoLink Super Admin",
+      email: "admin@nvit.space",
+      name: "NVIT Super Admin",
       password: adminPasswordHash,
       role: "SUPER_ADMIN",
     },
@@ -23,10 +23,10 @@ async function main() {
   // Seed standard executives
   const execPasswordHash = await bcrypt.hash("Exec@12345", 10);
   const executive = await prisma.user.upsert({
-    where: { email: "executive@finolink.co" },
+    where: { email: "executive@nvit.space" },
     update: {},
     create: {
-      email: "executive@finolink.co",
+      email: "executive@nvit.space",
       name: "Rohan Sharma (Lead Executive)",
       password: execPasswordHash,
       role: "EXECUTIVE",
@@ -38,125 +38,143 @@ async function main() {
   const banksData = [
     { name: "HDFC Bank", code: "HDFC", type: "BANK", logoUrl: "/logos/hdfc.png", priority: 1, partnerStatus: "ACTIVE", displayOrder: 1, eligibility: "Salary > 25000, Age 21-60", processingFee: 1.0 },
     { name: "ICICI Bank", code: "ICICI", type: "BANK", logoUrl: "/logos/icici.png", priority: 2, partnerStatus: "ACTIVE", displayOrder: 2, eligibility: "Salary > 20000, Age 21-58", processingFee: 1.5 },
-    { name: "State Bank of India", code: "SBI", type: "BANK", logoUrl: "/logos/sbi.png", priority: 3, partnerStatus: "ACTIVE", displayOrder: 3, eligibility: "Salary > 18000, Age 21-65", processingFee: 0.5 },
-    { name: "Axis Bank", code: "AXIS", type: "BANK", logoUrl: "/logos/axis.png", priority: 4, partnerStatus: "ACTIVE", displayOrder: 4, eligibility: "Salary > 22000, Age 21-60", processingFee: 1.25 },
-    { name: "Bajaj Finserv", code: "BAJAJ", type: "NBFC", logoUrl: "/logos/bajaj.png", priority: 5, partnerStatus: "ACTIVE", displayOrder: 5, eligibility: "Salary > 30000, Age 23-55", processingFee: 2.0 },
-    { name: "Tata Capital", code: "TATA", type: "NBFC", logoUrl: "/logos/tata.png", priority: 6, partnerStatus: "ACTIVE", displayOrder: 6, eligibility: "Salary > 25000, Age 22-58", processingFee: 1.75 },
-    { name: "Kotak Mahindra Bank", code: "KOTAK", type: "BANK", logoUrl: "/logos/kotak.png", priority: 7, partnerStatus: "ACTIVE", displayOrder: 7, eligibility: "Salary > 25000, Age 21-60", processingFee: 1.0 },
+    { name: "Axis Bank", code: "AXIS", type: "BANK", logoUrl: "/logos/axis.png", priority: 3, partnerStatus: "ACTIVE", displayOrder: 3, eligibility: "Salary > 25000, Age 21-60", processingFee: 1.25 },
+    { name: "Kotak Mahindra Bank", code: "KOTAK", type: "BANK", logoUrl: "/logos/kotak.png", priority: 4, partnerStatus: "ACTIVE", displayOrder: 4, eligibility: "Salary > 30000, Age 21-58", processingFee: 1.0 },
+    { name: "Bajaj Finserv", code: "BAJAJ", type: "NBFC", logoUrl: "/logos/bajaj.png", priority: 5, partnerStatus: "ACTIVE", displayOrder: 5, eligibility: "Salary > 18000, Age 23-55", processingFee: 2.0 },
+    { name: "Tata Capital", code: "TATA", type: "NBFC", logoUrl: "/logos/tata.png", priority: 6, partnerStatus: "ACTIVE", displayOrder: 6, eligibility: "Salary > 20000, Age 21-58", processingFee: 1.75 },
+    { name: "Yes Bank", code: "YES", type: "BANK", logoUrl: "/logos/yes.png", priority: 7, partnerStatus: "ACTIVE", displayOrder: 7, eligibility: "Salary > 25000, Age 21-60", processingFee: 1.5 },
+    { name: "IDFC First Bank", code: "IDFC", type: "BANK", logoUrl: "/logos/idfc.png", priority: 8, partnerStatus: "ACTIVE", displayOrder: 8, eligibility: "Salary > 20000, Age 23-58", processingFee: 1.0 },
+    { name: "Standard Chartered", code: "SCB", type: "BANK", logoUrl: "/logos/scb.png", priority: 9, partnerStatus: "ACTIVE", displayOrder: 9, eligibility: "Salary > 50000, Age 22-58", processingFee: 1.0 },
+    { name: "IndusInd Bank", code: "INDUS", type: "BANK", logoUrl: "/logos/indusind.png", priority: 10, partnerStatus: "ACTIVE", displayOrder: 10, eligibility: "Salary > 25000, Age 21-60", processingFee: 1.5 },
   ];
 
-  const createdBanks = [];
-  for (const bank of banksData) {
-    const b = await prisma.bank.upsert({
-      where: { code: bank.code },
-      update: {
-        priority: bank.priority,
-        partnerStatus: bank.partnerStatus,
-        displayOrder: bank.displayOrder,
-        eligibility: bank.eligibility,
-        processingFee: bank.processingFee,
-      },
-      create: bank,
+  const bankMap: Record<string, string> = {};
+  for (const b of banksData) {
+    const created = await prisma.bank.upsert({
+      where: { code: b.code },
+      update: b,
+      create: b,
     });
-    createdBanks.push(b);
+    bankMap[b.code] = created.id;
   }
-  console.log(`✅ ${createdBanks.length} Banks & NBFCs seeded.`);
+  console.log(`✅ Seeded ${banksData.length} banks.`);
+
+  // Seed Default Loan Products
+  const productsData = [
+    { bankId: bankMap["HDFC"], name: "HDFC Express Personal Loan", code: "HDFC_PL", type: "PERSONAL_LOAN", minAmount: 50000, maxAmount: 4000000, minTenure: 12, maxTenure: 60, roiRange: "10.5% - 21.0%", description: "Instant digital sanction with paperless verification." },
+    { bankId: bankMap["ICICI"], name: "ICICI Instant Salary Loan", code: "ICICI_PL", type: "PERSONAL_LOAN", minAmount: 50000, maxAmount: 5000000, minTenure: 12, maxTenure: 72, roiRange: "10.75% - 19.0%", description: "Pre-approved loan offers for salary account holders." },
+    { bankId: bankMap["AXIS"], name: "Axis 24x7 Quick Personal Loan", code: "AXIS_PL", type: "PERSONAL_LOAN", minAmount: 50000, maxAmount: 4000000, minTenure: 12, maxTenure: 60, roiRange: "10.49% - 22.0%", description: "Instant disbursement for existing bank customers." },
+    { bankId: bankMap["KOTAK"], name: "Kotak Smart Personal Loan", code: "KOTAK_PL", type: "PERSONAL_LOAN", minAmount: 50000, maxAmount: 3500000, minTenure: 12, maxTenure: 60, roiRange: "10.99% - 24.0%", description: "Low processing charges and high tenure flexibility." },
+    { bankId: bankMap["BAJAJ"], name: "Bajaj Flexi Hybrid Personal Loan", code: "BAJAJ_PL", type: "PERSONAL_LOAN", minAmount: 30000, maxAmount: 3500000, minTenure: 12, maxTenure: 84, roiRange: "11.0% - 26.0%", description: "Withdraw as you need, pay interest only on used limit." },
+  ];
+
+  for (const p of productsData) {
+    if (p.bankId) {
+      await prisma.loanProduct.upsert({
+        where: { code: p.code },
+        update: p,
+        create: p,
+      });
+    }
+  }
+  console.log(`✅ Seeded loan products.`);
+
+  // Seed Default Categories
+  const categoryMaster = [
+    { name: "Super A", code: "SUPER_A", description: "Top Tier MNCs, Fortune 500 & Government Navratna entities" },
+    { name: "Category A", code: "CAT_A", description: "Listed bluechip firms and top private enterprises" },
+    { name: "Category B", code: "CAT_B", description: "Mid-sized established corporate employers" },
+    { name: "Category C", code: "CAT_C", description: "Emerging companies and startups" },
+    { name: "Category D", code: "CAT_D", description: "Small enterprises with high credit underwriting scrutiny" },
+    { name: "Unlisted", code: "UNLISTED", description: "Standard private limited entities not on lender lists" },
+    { name: "Negative", code: "NEGATIVE", description: "Restricted or debarred employer profiles" },
+  ];
+
+  for (const c of categoryMaster) {
+    await prisma.category.upsert({
+      where: { code: c.code },
+      update: c,
+      create: c,
+    });
+  }
+  console.log(`✅ Seeded default corporate category list.`);
 
   // Seed Sample Companies
   const sampleCompanies = [
-    "TATA CONSULTANCY SERVICES LIMITED",
-    "INFOSYS LIMITED",
-    "RELIANCE INDUSTRIES LIMITED",
-    "HDFC BANK LIMITED",
-    "WIPRO LIMITED",
-    "BHARTI AIRTEL LIMITED",
-    "ICICI BANK LIMITED",
-    "LARSEN AND TOUBRO LIMITED",
-    "HINDUSTAN UNILEVER LIMITED",
-    "TECH MAHINDRA LIMITED",
+    { name: "TATA CONSULTANCY SERVICES LIMITED", cin: "L22210MH1995PLC084781", status: "ACTIVE", city: "Mumbai", state: "Maharashtra", pincode: "400001" },
+    { name: "INFOSYS LIMITED", cin: "L85110KA1981PLC013115", status: "ACTIVE", city: "Bengaluru", state: "Karnataka", pincode: "560100" },
+    { name: "RELIANCE INDUSTRIES LIMITED", cin: "L17110MH1973PLC019786", status: "ACTIVE", city: "Mumbai", state: "Maharashtra", pincode: "400021" },
+    { name: "WIPRO LIMITED", cin: "L32102KA1945PLC020800", status: "ACTIVE", city: "Bengaluru", state: "Karnataka", pincode: "560035" },
+    { name: "HCL TECHNOLOGIES LIMITED", cin: "L74140DL1991PLC046369", status: "ACTIVE", city: "Noida", state: "Uttar Pradesh", pincode: "201301" },
+    { name: "LARSEN AND TOUBRO LIMITED", cin: "L99999MH1946PLC004768", status: "ACTIVE", city: "Mumbai", state: "Maharashtra", pincode: "400072" },
+    { name: "MAHINDRA AND MAHINDRA LIMITED", cin: "L65990MH1945PLC004558", status: "ACTIVE", city: "Mumbai", state: "Maharashtra", pincode: "400018" },
+    { name: "BHARTI AIRTEL LIMITED", cin: "L74899DL1995PLC070609", status: "ACTIVE", city: "New Delhi", state: "Delhi", pincode: "110070" },
   ];
 
-  for (const companyName of sampleCompanies) {
-    const normalizedName = companyName.toUpperCase().replace(/[^A-Z0-9]/g, "");
-    const company = await prisma.company.upsert({
-      where: { normalizedName },
-      update: {},
-      create: {
-        name: companyName,
-        normalizedName,
-      },
+  for (const comp of sampleCompanies) {
+    const createdComp = await prisma.company.upsert({
+      where: { name: comp.name },
+      update: comp,
+      create: comp,
     });
 
     // Assign categories across banks
-    for (const bank of createdBanks) {
-      const categories = ["CAT A", "CAT B", "CAT C", "CAT A", "UNLISTED"];
-      const randomCat = categories[Math.floor(Math.random() * categories.length)];
-
+    if (bankMap["HDFC"]) {
       await prisma.companyBankCategory.upsert({
-        where: {
-          companyId_bankId: {
-            companyId: company.id,
-            bankId: bank.id,
-          },
-        },
-        update: {},
-        create: {
-          companyId: company.id,
-          bankId: bank.id,
-          category: randomCat,
-          status: randomCat === "REJECT" ? "BLOCKED" : "APPROVED",
-          remarks: `Standard ${bank.name} classification for ${companyName}`,
-        },
+        where: { companyId_bankId: { companyId: createdComp.id, bankId: bankMap["HDFC"] } },
+        update: { category: "SUPER_A", status: "APPROVED" },
+        create: { companyId: createdComp.id, bankId: bankMap["HDFC"], category: "SUPER_A", status: "APPROVED" },
+      });
+    }
+    if (bankMap["ICICI"]) {
+      await prisma.companyBankCategory.upsert({
+        where: { companyId_bankId: { companyId: createdComp.id, bankId: bankMap["ICICI"] } },
+        update: { category: "CAT_A", status: "APPROVED" },
+        create: { companyId: createdComp.id, bankId: bankMap["ICICI"], category: "CAT_A", status: "APPROVED" },
       });
     }
   }
-  console.log(`✅ Sample Companies & Category mappings seeded.`);
+  console.log(`✅ Seeded sample companies and category mappings.`);
 
   // Seed Sample Pincodes
   const samplePincodes = [
-    { pincode: "110001", state: "Delhi", city: "New Delhi", area: "Connaught Place" },
-    { pincode: "400001", state: "Maharashtra", city: "Mumbai", area: "Fort" },
-    { pincode: "560001", state: "Karnataka", city: "Bengaluru", area: "MG Road" },
-    { pincode: "600001", state: "Tamil Nadu", city: "Chennai", area: "George Town" },
-    { pincode: "700001", state: "West Bengal", city: "Kolkata", area: "BBD Bagh" },
-    { pincode: "122001", state: "Haryana", city: "Gurugram", area: "DLF Cyber City" },
-    { pincode: "201301", state: "Uttar Pradesh", city: "Noida", area: "Sector 18" },
+    { pincode: "110001", state: "Delhi", city: "New Delhi", area: "Connaught Place", isServiceable: true, isNegative: false, category: "PREFERRED" },
+    { pincode: "400001", state: "Maharashtra", city: "Mumbai", area: "Fort / Nariman Point", isServiceable: true, isNegative: false, category: "PREFERRED" },
+    { pincode: "560001", state: "Karnataka", city: "Bengaluru", area: "MG Road / Brigade Road", isServiceable: true, isNegative: false, category: "PREFERRED" },
+    { pincode: "600001", state: "Tamil Nadu", city: "Chennai", area: "Parrys / George Town", isServiceable: true, isNegative: false, category: "PREFERRED" },
+    { pincode: "700001", state: "West Bengal", city: "Kolkata", area: "BBD Bagh / Dalhousie", isServiceable: true, isNegative: false, category: "PREFERRED" },
+    { pincode: "500001", state: "Telangana", city: "Hyderabad", area: "Afzal Gunj / Abids", isServiceable: true, isNegative: false, category: "PREFERRED" },
+    { pincode: "122001", state: "Haryana", city: "Gurugram", area: "Old Gurugram / Civil Lines", isServiceable: true, isNegative: false, category: "PREFERRED" },
+    { pincode: "201301", state: "Uttar Pradesh", city: "Noida", area: "Sector 1 to 11", isServiceable: true, isNegative: false, category: "PREFERRED" },
   ];
 
   for (const pin of samplePincodes) {
-    for (const bank of createdBanks) {
+    if (bankMap["HDFC"]) {
       await prisma.pincodeServiceability.upsert({
-        where: {
-          bankId_pincode: {
-            bankId: bank.id,
-            pincode: pin.pincode,
-          },
-        },
-        update: {},
-        create: {
-          bankId: bank.id,
-          pincode: pin.pincode,
-          state: pin.state,
-          city: pin.city,
-          area: pin.area,
-          isServiceable: true,
-          isNegative: false,
-          category: "PREFERRED",
-        },
+        where: { bankId_pincode: { bankId: bankMap["HDFC"], pincode: pin.pincode } },
+        update: pin,
+        create: { ...pin, bankId: bankMap["HDFC"] },
+      });
+    }
+    if (bankMap["ICICI"]) {
+      await prisma.pincodeServiceability.upsert({
+        where: { bankId_pincode: { bankId: bankMap["ICICI"], pincode: pin.pincode } },
+        update: pin,
+        create: { ...pin, bankId: bankMap["ICICI"] },
       });
     }
   }
-  console.log(`✅ Sample Pincode serviceability records seeded.`);
+  console.log(`✅ Seeded sample pincodes.`);
 
-  // Seed Website CMS
+  // Seed Website CMS configurations
   const websiteCmsData = [
     {
       key: "hero",
       value: {
-        headline: "Instant Policy & Verification Gateway",
-        subtitle: "India's first automated loan policy circular index for financial consultants & bank DSAs.",
-        primaryButton: "Search Companies",
-        secondaryButton: "Check Pincodes",
+        title: "Intelligent Loan Policy & Corporate Category Matrix",
+        subtitle: "Instantly check eligibility, FOIR limits, company classifications, and serviceability across 50+ financial institutions.",
+        ctaText: "Check Eligibility Now",
+        ctaUrl: "/company-check",
         logoUrl: "/logos/hero-illustration.svg",
       },
     },
@@ -165,7 +183,7 @@ async function main() {
       value: {
         mission: "To eliminate friction in loan verification processes by building a single source of truth for bank policies.",
         vision: "Real-time policy validation for every financial consultant in India.",
-        description: "FINOLINK Business Consulting Pvt. Ltd. is a premier financial advisory firm, building state-of-the-art software systems to accelerate credit verification.",
+        description: "NVIT.SPACE is a premier financial technology platform, building state-of-the-art software systems to accelerate credit verification.",
       },
     },
     {
@@ -179,7 +197,7 @@ async function main() {
     {
       key: "testimonials",
       value: [
-        { quote: "FINOLINK CMS has halved our processing timelines.", author: "Suresh R., DSA Partner" },
+        { quote: "NVIT.SPACE has halved our processing timelines.", author: "Suresh R., DSA Partner" },
         { quote: "Highly accurate corporate indexing system.", author: "Neha G., Credit Manager" },
       ],
     },
@@ -193,17 +211,17 @@ async function main() {
     {
       key: "footer",
       value: {
-        copyright: "© 2026 FINOLINK Business Consulting Pvt. Ltd. All rights reserved.",
+        copyright: "© 2026 NVIT.SPACE. All rights reserved.",
         address: "DLF Cyber City, Phase III, Gurugram, Haryana - 122002",
-        contactEmail: "ops@finolink.co",
+        contactEmail: "ops@nvit.space",
       },
     },
     {
       key: "branding",
       value: {
-        companyName: "FINOLINK Business Consulting",
+        companyName: "NVIT.SPACE",
         faviconUrl: "/favicon.ico",
-        logoUrl: "/logos/finolink.png",
+        logoUrl: "/brand/nvit-icon-animated.svg",
         themeColors: {
           primary: "#1d4ed8",
           secondary: "#0f172a",
@@ -241,10 +259,10 @@ async function main() {
 
   // Seed SEO Settings
   const seoData = [
-    { route: "home", title: "FINOLINK - Enterprise Loan Policy Engine", description: "Instantly check corporate categories, lender policies, and pincode serviceability.", keywords: "loan policy, corporate categories, bank dsa portal" },
-    { route: "company-check", title: "Verify Company Category - FINOLINK", description: "Search and verify bank classifications for over 1.5 Lakh companies.", keywords: "company check, cat a companies, hdfc company list" },
-    { route: "pincode-check", title: "Lender Pincode Coverage Finder - FINOLINK", description: "Lookup serviceable areas for personal loans, home loans, and business loans.", keywords: "pincode checker, bank service area, negative pincodes" },
-    { route: "loan-apply", title: "Apply for Personal & Business Loans - FINOLINK", description: "Submit applications to matching lenders with digitized policies.", keywords: "apply loan, business loan eligibility" },
+    { route: "home", title: "NVIT.SPACE - Enterprise Loan Policy Engine", description: "Instantly check corporate categories, lender policies, and pincode serviceability.", keywords: "loan policy, corporate categories, bank dsa portal" },
+    { route: "company-check", title: "Verify Company Category - NVIT.SPACE", description: "Search and verify bank classifications for over 1.5 Lakh companies.", keywords: "company check, cat a companies, hdfc company list" },
+    { route: "pincode-check", title: "Lender Pincode Coverage Finder - NVIT.SPACE", description: "Lookup serviceable areas for personal loans, home loans, and business loans.", keywords: "pincode checker, bank service area, negative pincodes" },
+    { route: "loan-apply", title: "Apply for Personal & Business Loans - NVIT.SPACE", description: "Submit applications to matching lenders with digitized policies.", keywords: "apply loan, business loan eligibility" },
   ];
 
   for (const s of seoData) {
@@ -258,7 +276,7 @@ async function main() {
 
   // Seed System Settings
   const systemData = [
-    { key: "smtp", value: { host: "smtp.mailgun.org", port: 587, secure: false, auth: { user: "noreply@finolink.co", pass: "SMTPPass2026" } } },
+    { key: "smtp", value: { host: "smtp.mailgun.org", port: 587, secure: false, auth: { user: "noreply@nvit.space", pass: "SMTPPass2026" } } },
     { key: "sms_gateway", value: { provider: "Twilio", sid: "AC_DEMO_SID", token: "DEMO_TOKEN", from: "+15005550006" } },
     { key: "whatsapp", value: { provider: "MetaCloudAPI", phoneNumberId: "109823091", accessToken: "EAAG_WHATSAPP_TOKEN", enabled: true } },
     { key: "storage", value: { provider: "LOCAL", maxMb: 2048 } },
@@ -272,82 +290,14 @@ async function main() {
       create: { key: sys.key, value: sys.value },
     });
   }
-  console.log(`✅ System gateway settings seeded.`);
+  console.log(`✅ System settings seeded.`);
 
-  // Seed Bank Policies & Loan Products
-  for (const bank of createdBanks) {
-    // 1. Bank Policies for categories
-    const categories = ["CAT A", "CAT B", "CAT C", "UNLISTED"];
-    for (const cat of categories) {
-      await prisma.bankPolicy.create({
-        data: {
-          bankId: bank.id,
-          companyCategory: cat,
-          minSalary: cat === "CAT A" ? 20000 : cat === "CAT B" ? 25000 : cat === "CAT C" ? 30000 : 40000,
-          maxSalary: 99999999,
-          minAge: 21,
-          maxAge: 60,
-          foir: cat === "CAT A" ? 65.0 : cat === "CAT B" ? 60.0 : cat === "CAT C" ? 55.0 : 50.0,
-          minCibil: cat === "CAT A" ? 650 : cat === "CAT B" ? 680 : 700,
-          roi: cat === "CAT A" ? 10.25 : cat === "CAT B" ? 10.75 : 11.5,
-          processingFee: 1.0,
-          minLoanAmount: 100000,
-          maxLoanAmount: cat === "CAT A" ? 5000000 : 3000000,
-          minTenure: 12,
-          maxTenure: 84,
-          employmentType: "SALARIED",
-          notes: `Policy circular revised for H2 FY26. Priority processing for Category ${cat} accounts.`,
-        },
-      });
-    }
-
-    // 2. Loan Products
-    const products = [
-      { name: "Personal Loan", code: "PL", description: "Unsecured personal loans for salaried individuals", roiRange: "10.25% - 15.0%", maxTenure: 84 },
-      { name: "Home Loan", code: "HL", description: "Home buying finance for residential properties", roiRange: "8.40% - 9.50%", maxTenure: 360 },
-      { name: "Business Loan", code: "BL", description: "Working capital finance for MSMEs", roiRange: "13.00% - 18.00%", maxTenure: 60 },
-    ];
-
-    for (const prod of products) {
-      await prisma.loanProduct.create({
-        data: {
-          bankId: bank.id,
-          name: prod.name,
-          code: prod.code,
-          description: prod.description,
-          roiRange: prod.roiRange,
-          maxTenure: prod.maxTenure,
-        },
-      });
-    }
-  }
-  console.log(`✅ Bank policy limits and loan products seeded.`);
-
-  // Seed sample loan leads
-  const sampleLeads = [
-    { name: "Aditya Verma", mobile: "9876543210", email: "aditya.v@gmail.com", city: "Mumbai", state: "Maharashtra", company: "TATA CONSULTANCY SERVICES LIMITED", monthlyIncome: 65000, loanType: "Personal Loan", loanAmount: 500000, status: "FRESH", source: "WEBSITE" },
-    { name: "Pooja Hegde", mobile: "9988776655", email: "pooja.h@yahoo.com", city: "Bengaluru", state: "Karnataka", company: "INFOSYS LIMITED", monthlyIncome: 80000, loanType: "Home Loan", loanAmount: 4500000, status: "ASSIGNED", source: "WEBSITE", assignedExecutiveId: executive.id },
-    { name: "Ramesh Kumar", mobile: "9123456789", email: "ramesh.k@rediffmail.com", city: "Delhi", state: "Delhi", company: "RELIANCE INDUSTRIES LIMITED", monthlyIncome: 45000, loanType: "Personal Loan", loanAmount: 200000, status: "CONTACTED", source: "GOOGLE_ADS" },
-  ];
-
-  for (const lead of sampleLeads) {
-    await prisma.loanApplication.create({
-      data: {
-        ...lead,
-        timeline: [
-          { status: "FRESH", timestamp: new Date().toISOString(), note: "Lead automatically captured via portal inquiry form" },
-          lead.status !== "FRESH" ? { status: lead.status, timestamp: new Date().toISOString(), note: `Status updated to ${lead.status}` } : null,
-        ].filter(Boolean) as any,
-      },
-    });
-  }
-  console.log(`✅ CRM Loan Leads seeded.`);
-  console.log("🎉 Seed finished successfully!");
+  console.log("🚀 Database seeding completed successfully!");
 }
 
 main()
   .catch((e) => {
-    console.error("Error during seeding:", e);
+    console.error("❌ Seeding error:", e);
     process.exit(1);
   })
   .finally(async () => {

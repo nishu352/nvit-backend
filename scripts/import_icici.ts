@@ -41,7 +41,7 @@ function normalizeCategory(raw: string): string {
 
 async function main() {
   console.log("═══════════════════════════════════════════════════════");
-  console.log("  FINOLINK — ICICI Direct Import Script");
+  console.log("  NVIT.SPACE — ICICI Direct Import Script");
   console.log("═══════════════════════════════════════════════════════\n");
 
   // ── 1. Find ICICI bank ───────────────────────────────────────────────────

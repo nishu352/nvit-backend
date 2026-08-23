@@ -256,27 +256,28 @@ if (process.env.NODE_ENV !== "test") {
         }
         app.log.info(`🚀 Enterprise Backend REST Server listening on ${address}`);
 
-        // Startup cleanup 1: clear zombie DB connections from force-killed previous processes
-        clearStaleConnections().catch((e) => {
-          console.warn("Startup connection cleanup skipped:", e?.message || e);
-        });
+        // Startup cleanup (deferred 2s to allow database pool to finish initial handshake)
+        setTimeout(() => {
+          clearStaleConnections().catch((e) => {
+            console.warn("Startup connection cleanup skipped:", e?.message || e);
+          });
 
-        // Startup cleanup 2: resolve any imports marked as PROCESSING before crash/restart
-        prisma.importHistory.updateMany({
-          where: { status: "PROCESSING" },
-          data: {
-            status: "FAILED",
-            errorMessage: "Import interrupted — server restarted during processing. Please re-upload the file.",
-          },
-        })
-        .then((stuck) => {
-          if (stuck && stuck.count > 0) {
-            console.warn(`⚠️  Resolved ${stuck.count} stuck import(s) — marked as FAILED on startup`);
-          }
-        })
-        .catch((e) => {
-          console.warn("Startup import cleanup skipped:", e?.message || e);
-        });
+          prisma.importHistory.updateMany({
+            where: { status: "PROCESSING" },
+            data: {
+              status: "FAILED",
+              errorMessage: "Import interrupted — server restarted during processing. Please re-upload the file.",
+            },
+          })
+          .then((stuck) => {
+            if (stuck && stuck.count > 0) {
+              console.warn(`⚠️  Resolved ${stuck.count} stuck import(s) — marked as FAILED on startup`);
+            }
+          })
+          .catch((e) => {
+            console.warn("Startup import cleanup skipped:", e?.message || e);
+          });
+        }, 2000);
       });
     })
     .catch((err) => {

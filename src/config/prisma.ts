@@ -39,21 +39,14 @@ if (process.env.NODE_ENV !== "production") {
 }
 
 /**
- * On startup: terminate any stale idle connections left from previous crashes.
- * Runs once, silently — if it fails (e.g. DB is totally down) we log and move on.
+ * On startup: Lightweight connection check (safe, non-destructive).
  */
 export async function clearStaleConnections(): Promise<void> {
   try {
-    await prisma.$queryRawUnsafe(`
-      SELECT pg_terminate_backend(pid)
-      FROM pg_stat_activity
-      WHERE datname = current_database()
-        AND pid <> pg_backend_pid()
-        AND state IN ('idle', 'idle in transaction')
-        AND state_change < NOW() - INTERVAL '90 seconds';
-    `);
+    // Non-destructive ping
+    await prisma.$queryRawUnsafe(`SELECT 1;`);
   } catch {
-    // Non-fatal — DB may not have pg_terminate_backend permission; continue
+    // Non-fatal
   }
 }
 

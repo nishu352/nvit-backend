@@ -198,7 +198,7 @@ export async function getAiMapping(schema: FileSchema, importType: string = "MER
     const jsonMappingFields = targetFields.map(f => `    "${f.key}": ""`).join(",\n");
     const jsonConfidenceFields = targetFields.map(f => `    "${f.key}": 0`).join(",\n");
 
-    const prompt = `You are a senior data schema analyst for a financial technology company called FINOLINK. Your only task is to analyze a spreadsheet's column structure and map columns to FINOLINK's import target fields.
+    const prompt = `You are a senior data schema analyst for a financial technology platform called NVIT.SPACE. Your only task is to analyze a spreadsheet's column structure and map columns to NVIT.SPACE's import target fields.
 
 SPREADSHEET COLUMN STRUCTURE (headers + data types + sample values):
 ${JSON.stringify(columnSummary, null, 2)}
