@@ -94,10 +94,11 @@ async function getRankedCompanyCandidates(
   const prefixOrConditions: any[] = [
     // Direct exact / phrase prefix
     { name: { startsWith: cleanQuery, mode: "insensitive" } },
-    ...(normalizedName ? [{ normalizedName: { startsWith: normalizedName } }] : []),
-    ...(baseName ? [{ baseName: { startsWith: baseName } }] : []),
+    ...(normalizedName ? [{ normalizedName: { contains: normalizedName } }] : []),
+    ...(baseName ? [{ baseName: { contains: baseName } }] : []),
     // Substring contains
     { name: { contains: cleanQuery, mode: "insensitive" } },
+    { cin: { contains: cleanQuery, mode: "insensitive" } },
     ...(aliasCompanyIds.length > 0 ? [{ id: { in: aliasCompanyIds } }] : []),
   ];
 
@@ -164,7 +165,16 @@ async function getRankedCompanyCandidates(
   // ── Score & Rank with Central Relevance Engine ────────────────────────────────
   const scored = Array.from(dedupedMap.values())
     .map((c) => {
-      const rel = calculateCompanyRelevance(c.name, cleanQuery, c.normalizedName, c.baseName);
+      const rel = calculateCompanyRelevance(
+        c.name,
+        cleanQuery,
+        c.normalizedName,
+        c.baseName,
+        c.cin,
+        c.city,
+        c.state,
+        c.pincode
+      );
       return {
         ...c,
         relevanceScore: rel.score,

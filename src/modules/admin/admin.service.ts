@@ -1,6 +1,7 @@
 import { prisma } from "../../config/prisma.js";
 import { normalizeCompanyName } from "../../utils/normalize.js";
 import { calculateCompanyRelevance, tokenize } from "../../utils/relevanceRanker.js";
+import { hashPassword } from "../../utils/hash.js";
 import path from "path";
 import fs from "fs";
 
@@ -370,6 +371,148 @@ export async function getAllUsers() {
   });
 }
 
+export async function updateUser(
+  id: string,
+  data: {
+    name?: string;
+    email?: string;
+    role?: any;
+    isActive?: boolean;
+  }
+) {
+  const updateData: any = {};
+  if (data.name) updateData.name = data.name.trim();
+  if (data.email) updateData.email = data.email.trim().toLowerCase();
+  if (data.role) updateData.role = data.role;
+  if (typeof data.isActive === "boolean") updateData.isActive = data.isActive;
+
+  return await prisma.user.update({
+    where: { id },
+    data: updateData,
+    select: {
+      id: true,
+      email: true,
+      name: true,
+      role: true,
+      isActive: true,
+      createdAt: true,
+    },
+  });
+}
+
+export async function deleteUser(id: string) {
+  return await prisma.$transaction(
+    async (tx) => {
+      const user = await tx.user.findUnique({
+        where: { id },
+      });
+      if (!user) throw new Error("User not found.");
+
+      // Safety check: Prevent deleting the only remaining Super Admin
+      if (user.role === "SUPER_ADMIN") {
+        const superAdminCount = await tx.user.count({
+          where: { role: "SUPER_ADMIN" },
+        });
+        if (superAdminCount <= 1) {
+          throw new Error("Cannot delete the only remaining Super Admin account.");
+        }
+      }
+
+      // Reassign or cleanup import histories created by this user
+      const fallbackAdmin = await tx.user.findFirst({
+        where: {
+          id: { not: id },
+          role: { in: ["SUPER_ADMIN", "ADMIN"] },
+        },
+      });
+
+      if (fallbackAdmin) {
+        await tx.importHistory.updateMany({
+          where: { createdById: id },
+          data: { createdById: fallbackAdmin.id },
+        });
+      } else {
+        const userImports = await tx.importHistory.findMany({
+          where: { createdById: id },
+          select: { id: true },
+        });
+        const importIds = userImports.map((i) => i.id);
+        if (importIds.length > 0) {
+          await tx.importError.deleteMany({
+            where: { importJobId: { in: importIds } },
+          });
+          await tx.importHistory.deleteMany({
+            where: { createdById: id },
+          });
+        }
+      }
+
+      // Unassign leads assigned to this user
+      await tx.loanApplication.updateMany({
+        where: { assignedExecutiveId: id },
+        data: { assignedExecutiveId: null },
+      });
+
+      // Unlink audit logs
+      await tx.auditLog.updateMany({
+        where: { userId: id },
+        data: { userId: null },
+      });
+
+      // Delete active user sessions
+      await tx.session.deleteMany({
+        where: { userId: id },
+      });
+
+      // Delete user
+      return await tx.user.delete({
+        where: { id },
+      });
+    },
+    { timeout: 30000, maxWait: 15000 }
+  );
+}
+
+export async function resetUserPassword(id: string, newPassword: string) {
+  if (!newPassword || newPassword.length < 6) {
+    throw new Error("Password must be at least 6 characters long.");
+  }
+  const hashedPassword = await hashPassword(newPassword);
+  return await prisma.user.update({
+    where: { id },
+    data: { password: hashedPassword },
+    select: {
+      id: true,
+      email: true,
+      name: true,
+      role: true,
+      isActive: true,
+      createdAt: true,
+    },
+  });
+}
+
+export async function toggleUserStatus(id: string) {
+  const user = await prisma.user.findUnique({
+    where: { id },
+    select: { id: true, isActive: true },
+  });
+  if (!user) throw new Error("User not found.");
+
+  return await prisma.user.update({
+    where: { id },
+    data: { isActive: !user.isActive },
+    select: {
+      id: true,
+      email: true,
+      name: true,
+      role: true,
+      isActive: true,
+      createdAt: true,
+    },
+  });
+}
+
 export async function getAuditLogsList(page: number = 1, limit: number = 30) {
   const skip = (page - 1) * limit;
   const [total, items] = await Promise.all([
@@ -396,38 +539,57 @@ export async function getCompaniesList(page: number = 1, limit: number = 30, que
   
   if (query && query.trim()) {
     const cleanQuery = query.trim();
+    const isShortQuery = cleanQuery.length < 4;
     const { normalizedName: norm, baseName } = normalizeCompanyName(cleanQuery);
     const tokens = tokenize(cleanQuery);
 
     const orConditions: any[] = [
+      // Direct prefix matches (highest priority)
       { name: { startsWith: cleanQuery, mode: "insensitive" } },
-      ...(norm ? [{ normalizedName: { startsWith: norm } }] : []),
-      ...(baseName ? [{ baseName: { startsWith: baseName } }] : []),
-      { name: { contains: cleanQuery, mode: "insensitive" } },
-      { cin: { contains: cleanQuery, mode: "insensitive" } },
+      ...(norm && norm.length >= 2 ? [{ normalizedName: { startsWith: norm } }] : []),
+      ...(baseName && baseName.length >= 2 ? [{ baseName: { startsWith: baseName } }] : []),
+      // Word-start matches (e.g. " Tata Motors" or " Indian...")
+      { name: { contains: ` ${cleanQuery}`, mode: "insensitive" } },
+      { cin: { startsWith: cleanQuery, mode: "insensitive" } },
+      { city: { startsWith: cleanQuery, mode: "insensitive" } },
     ];
 
-    if (tokens.length > 1) {
-      orConditions.unshift({
-        AND: tokens.filter(t => t.length >= 2).map((t) => ({
-          name: { contains: t, mode: "insensitive" },
-        })),
-      });
-      if (tokens[0] && tokens[0].length >= 3) {
-        orConditions.push({ name: { startsWith: tokens[0], mode: "insensitive" } });
+    // For longer queries (>= 4 chars), also allow broader contains & multi-token matches
+    if (!isShortQuery) {
+      orConditions.push(
+        { name: { contains: cleanQuery, mode: "insensitive" } },
+        ...(norm && norm.length >= 4 ? [{ normalizedName: { contains: norm } }] : []),
+        ...(baseName && baseName.length >= 4 ? [{ baseName: { contains: baseName } }] : []),
+        { cin: { contains: cleanQuery, mode: "insensitive" } },
+        { city: { contains: cleanQuery, mode: "insensitive" } },
+        { state: { contains: cleanQuery, mode: "insensitive" } },
+        { pincode: { contains: cleanQuery, mode: "insensitive" } }
+      );
+
+      // Multi-token condition: Match if ALL tokens appear in the company name
+      if (tokens.length > 1) {
+        const validTokens = tokens.filter((t) => t.length >= 2);
+        if (validTokens.length > 0) {
+          orConditions.unshift({
+            AND: validTokens.map((t) => ({
+              name: { contains: t, mode: "insensitive" },
+            })),
+          });
+        }
       }
     }
 
     whereClause.OR = orConditions;
 
     // Fetch candidate pool to rank
-    const candidatePoolLimit = Math.min(200, Math.max(100, (skip + safeLimit) * 3));
+    const candidatePoolLimit = Math.min(300, Math.max(150, (skip + safeLimit) * 3));
 
     const [total, rawCandidates] = await Promise.all([
       prisma.company.count({ where: whereClause }),
       prisma.company.findMany({
         where: whereClause,
         take: candidatePoolLimit,
+        orderBy: { name: "asc" },
         select: {
           id: true,
           name: true,
@@ -454,10 +616,19 @@ export async function getCompaniesList(page: number = 1, limit: number = 30, que
       }),
     ]);
 
-    // Score candidates
+    // Score candidates with enhanced ranker
     const scored = rawCandidates
       .map((c) => {
-        const rel = calculateCompanyRelevance(c.name, cleanQuery, c.normalizedName, c.baseName || undefined);
+        const rel = calculateCompanyRelevance(
+          c.name,
+          cleanQuery,
+          c.normalizedName,
+          c.baseName || undefined,
+          c.cin,
+          c.city,
+          c.state,
+          c.pincode
+        );
         return {
           ...c,
           relevanceScore: rel.score,
@@ -479,9 +650,9 @@ export async function getCompaniesList(page: number = 1, limit: number = 30, que
     const items = scored.slice(skip, skip + safeLimit);
 
     return {
-      total,
+      total: Math.max(scored.length, total),
       page,
-      totalPages: Math.ceil(total / safeLimit),
+      totalPages: Math.ceil(Math.max(scored.length, total) / safeLimit) || 1,
       items,
     };
   }
@@ -528,15 +699,91 @@ export async function getCompaniesList(page: number = 1, limit: number = 30, que
   };
 }
 
-export async function createCompany(data: { name: string; cin?: string }) {
-  const normalizedName = data.name.toUpperCase().replace(/[^A-Z0-9]/g, "");
-  return await prisma.company.create({
-    data: {
-      name: data.name.trim(),
-      normalizedName,
-      cin: data.cin?.trim() || null,
+export async function createCompany(data: {
+  name: string;
+  cin?: string;
+  pincode?: string;
+  city?: string;
+  state?: string;
+  district?: string;
+  status?: string;
+  categories?: Array<{
+    bankId: string;
+    category: string;
+    status?: string;
+    remarks?: string;
+  }>;
+  bankCategories?: Array<{
+    bankId: string;
+    category: string;
+    status?: string;
+    remarks?: string;
+  }>;
+}) {
+  const { normalizedName, baseName } = normalizeCompanyName(data.name);
+  const categoriesToSave = data.categories || data.bankCategories || [];
+
+  return await prisma.$transaction(
+    async (tx) => {
+      const company = await tx.company.create({
+        data: {
+          name: data.name.trim(),
+          normalizedName,
+          baseName: baseName || undefined,
+          cin: data.cin?.trim() || null,
+          pincode: data.pincode?.trim() || null,
+          city: data.city?.trim() || null,
+          state: data.state?.trim() || null,
+          district: data.district?.trim() || null,
+          status: data.status || "ACTIVE",
+        },
+      });
+
+      if (categoriesToSave.length > 0) {
+        for (const cat of categoriesToSave) {
+          if (!cat.bankId || !cat.category) continue;
+          await tx.companyBankCategory.upsert({
+            where: {
+              companyId_bankId: {
+                companyId: company.id,
+                bankId: cat.bankId,
+              },
+            },
+            update: {
+              category: cat.category.trim(),
+              status: cat.status || "APPROVED",
+              remarks: cat.remarks ? cat.remarks.trim() : null,
+              rawCompanyName: data.name.trim(),
+              source: "MANUAL",
+            },
+            create: {
+              companyId: company.id,
+              bankId: cat.bankId,
+              category: cat.category.trim(),
+              status: cat.status || "APPROVED",
+              remarks: cat.remarks ? cat.remarks.trim() : null,
+              rawCompanyName: data.name.trim(),
+              source: "MANUAL",
+            },
+          });
+        }
+      }
+
+      return await tx.company.findUnique({
+        where: { id: company.id },
+        include: {
+          bankCategories: {
+            include: {
+              bank: {
+                select: { id: true, name: true, code: true, type: true, logoUrl: true },
+              },
+            },
+          },
+        },
+      });
     },
-  });
+    { timeout: 30000, maxWait: 15000 }
+  );
 }
 
 export async function updateCompany(
@@ -549,6 +796,14 @@ export async function updateCompany(
     state?: string;
     district?: string;
     status?: string;
+    categories?: Array<{
+      id?: string;
+      bankId: string;
+      category: string;
+      status?: string;
+      remarks?: string;
+      delete?: boolean;
+    }>;
     bankCategories?: Array<{
       id?: string;
       bankId: string;
@@ -585,62 +840,69 @@ export async function updateCompany(
     updateData.status = data.status;
   }
 
-  const updatedCompany = await prisma.company.update({
-    where: { id },
-    data: updateData,
-  });
+  return await prisma.$transaction(
+    async (tx) => {
+      const updatedCompany = await tx.company.update({
+        where: { id },
+        data: updateData,
+      });
 
-  // Handle bank category updates if provided
-  if (Array.isArray(data.bankCategories)) {
-    for (const cat of data.bankCategories) {
-      if (!cat.bankId) continue;
+      const categoriesList = data.categories || data.bankCategories;
+      if (Array.isArray(categoriesList)) {
+        for (const cat of categoriesList) {
+          if (!cat.bankId) continue;
 
-      if (cat.delete || cat.category === "DELETE") {
-        await prisma.companyBankCategory.deleteMany({
-          where: {
-            companyId: id,
-            bankId: cat.bankId,
-          },
-        });
-      } else {
-        await prisma.companyBankCategory.upsert({
-          where: {
-            companyId_bankId: {
-              companyId: id,
-              bankId: cat.bankId,
+          if (cat.delete || cat.category === "DELETE") {
+            await tx.companyBankCategory.deleteMany({
+              where: {
+                companyId: id,
+                bankId: cat.bankId,
+              },
+            });
+          } else {
+            await tx.companyBankCategory.upsert({
+              where: {
+                companyId_bankId: {
+                  companyId: id,
+                  bankId: cat.bankId,
+                },
+              },
+              update: {
+                category: cat.category.trim(),
+                status: cat.status || "APPROVED",
+                remarks: cat.remarks ? cat.remarks.trim() : null,
+                rawCompanyName: data.name ? data.name.trim() : updatedCompany.name,
+                source: "MANUAL",
+              },
+              create: {
+                companyId: id,
+                bankId: cat.bankId,
+                category: cat.category.trim(),
+                status: cat.status || "APPROVED",
+                remarks: cat.remarks ? cat.remarks.trim() : null,
+                rawCompanyName: data.name ? data.name.trim() : updatedCompany.name,
+                source: "MANUAL",
+              },
+            });
+          }
+        }
+      }
+
+      return await tx.company.findUnique({
+        where: { id },
+        include: {
+          bankCategories: {
+            include: {
+              bank: {
+                select: { id: true, name: true, code: true, type: true, logoUrl: true },
+              },
             },
           },
-          update: {
-            category: cat.category.toUpperCase().trim(),
-            status: cat.status || "APPROVED",
-            remarks: cat.remarks ? cat.remarks.trim() : null,
-            rawCompanyName: data.name ? data.name.trim() : updatedCompany.name,
-          },
-          create: {
-            companyId: id,
-            bankId: cat.bankId,
-            category: cat.category.toUpperCase().trim(),
-            status: cat.status || "APPROVED",
-            remarks: cat.remarks ? cat.remarks.trim() : null,
-            rawCompanyName: data.name ? data.name.trim() : updatedCompany.name,
-          },
-        });
-      }
-    }
-  }
-
-  return await prisma.company.findUnique({
-    where: { id },
-    include: {
-      bankCategories: {
-        include: {
-          bank: {
-            select: { id: true, name: true, code: true, type: true, logoUrl: true },
-          },
         },
-      },
+      });
     },
-  });
+    { timeout: 30000, maxWait: 15000 }
+  );
 }
 
 export async function deleteCompany(id: string) {
@@ -649,37 +911,130 @@ export async function deleteCompany(id: string) {
   });
 }
 
-export async function mergeCompanies(sourceId: string, targetId: string) {
-  const sourceMappings = await prisma.companyBankCategory.findMany({
-    where: { companyId: sourceId },
-  });
+export async function mergeCompanies(sourceIds: string | string[], targetId: string) {
+  const sourceIdList = (Array.isArray(sourceIds) ? sourceIds : [sourceIds]).filter(
+    (id) => id && id !== targetId
+  );
 
-  for (const mapping of sourceMappings) {
-    const targetExists = await prisma.companyBankCategory.findUnique({
-      where: {
-        companyId_bankId: {
-          companyId: targetId,
-          bankId: mapping.bankId,
-        },
-      },
-    });
-
-    if (!targetExists) {
-      await prisma.companyBankCategory.create({
-        data: {
-          companyId: targetId,
-          bankId: mapping.bankId,
-          category: mapping.category,
-          status: mapping.status,
-          remarks: mapping.remarks,
-        },
-      });
-    }
+  if (sourceIdList.length === 0) {
+    throw new Error("No valid source companies provided for merge.");
   }
 
-  return await prisma.company.delete({
-    where: { id: sourceId },
-  });
+  return await prisma.$transaction(
+    async (tx) => {
+      const targetCompany = await tx.company.findUnique({
+        where: { id: targetId },
+        include: { bankCategories: true, aliases: true },
+      });
+
+      if (!targetCompany) {
+        throw new Error(`Target canonical company with ID ${targetId} not found.`);
+      }
+
+      let updatedCin = targetCompany.cin;
+      let updatedPincode = targetCompany.pincode;
+      let updatedCity = targetCompany.city;
+      let updatedState = targetCompany.state;
+      let updatedDistrict = targetCompany.district;
+
+      for (const sourceId of sourceIdList) {
+        const sourceCompany = await tx.company.findUnique({
+          where: { id: sourceId },
+          include: { bankCategories: true, aliases: true },
+        });
+
+        if (!sourceCompany) continue;
+
+        // 1. Inherit missing metadata
+        if (!updatedCin && sourceCompany.cin) updatedCin = sourceCompany.cin;
+        if (!updatedPincode && sourceCompany.pincode) updatedPincode = sourceCompany.pincode;
+        if (!updatedCity && sourceCompany.city) updatedCity = sourceCompany.city;
+        if (!updatedState && sourceCompany.state) updatedState = sourceCompany.state;
+        if (!updatedDistrict && sourceCompany.district) updatedDistrict = sourceCompany.district;
+
+        // 2. Migrate bank categories to target
+        for (const mapping of sourceCompany.bankCategories) {
+          const targetExisting = await tx.companyBankCategory.findUnique({
+            where: {
+              companyId_bankId: {
+                companyId: targetId,
+                bankId: mapping.bankId,
+              },
+            },
+          });
+
+          if (!targetExisting) {
+            // Rebind category to target
+            await tx.companyBankCategory.create({
+              data: {
+                companyId: targetId,
+                bankId: mapping.bankId,
+                category: mapping.category,
+                status: mapping.status,
+                remarks: mapping.remarks,
+                rawCompanyName: mapping.rawCompanyName || sourceCompany.name,
+                source: mapping.source,
+              },
+            });
+          }
+        }
+
+        // 3. Register source normalized name & aliases as CompanyAlias on target
+        const aliasesToRegister = [
+          sourceCompany.normalizedName,
+          ...(sourceCompany.aliases || []).map((a) => a.alias),
+        ].filter(Boolean);
+
+        for (const alias of aliasesToRegister) {
+          if (alias !== targetCompany.normalizedName) {
+            try {
+              await tx.companyAlias.upsert({
+                where: { alias },
+                update: { companyId: targetId },
+                create: {
+                  alias,
+                  companyId: targetId,
+                },
+              });
+            } catch {
+              // Ignore alias collisions gracefully
+            }
+          }
+        }
+
+        // 4. Delete source company safely
+        await tx.company.delete({
+          where: { id: sourceId },
+        });
+      }
+
+      // Update target company if any metadata was enriched
+      await tx.company.update({
+        where: { id: targetId },
+        data: {
+          cin: updatedCin,
+          pincode: updatedPincode,
+          city: updatedCity,
+          state: updatedState,
+          district: updatedDistrict,
+        },
+      });
+
+      return await tx.company.findUnique({
+        where: { id: targetId },
+        include: {
+          bankCategories: {
+            include: {
+              bank: {
+                select: { id: true, name: true, code: true, type: true, logoUrl: true },
+              },
+            },
+          },
+        },
+      });
+    },
+    { timeout: 45000, maxWait: 20000 }
+  );
 }
 
 export async function bulkUpdateCompanyCategories(companyIds: string[], bankId: string, category: string, status: string, remarks?: string) {

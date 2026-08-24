@@ -11,6 +11,10 @@ import {
   clearBankCompanies,
   clearBankPincodes,
   getAllUsers,
+  updateUser,
+  deleteUser,
+  resetUserPassword,
+  toggleUserStatus,
   getAuditLogsList,
   getCompaniesList,
   createCompany,
@@ -180,6 +184,60 @@ export async function getUsersHandler(request: FastifyRequest, reply: FastifyRep
   }
 }
 
+export async function updateUserHandler(request: FastifyRequest, reply: FastifyReply) {
+  const { id } = request.params as { id: string };
+  const body = request.body as any;
+
+  try {
+    const user = await updateUser(id, body);
+    return reply.send({ success: true, data: user, message: "User updated successfully" });
+  } catch (err: any) {
+    return reply.status(400).send({ error: true, message: err.message || "Failed to update user" });
+  }
+}
+
+export async function deleteUserHandler(request: FastifyRequest, reply: FastifyReply) {
+  const { id } = request.params as { id: string };
+
+  try {
+    await deleteUser(id);
+    return reply.send({ success: true, message: "User deleted successfully" });
+  } catch (err: any) {
+    return reply.status(400).send({ error: true, message: err.message || "Failed to delete user" });
+  }
+}
+
+export async function resetUserPasswordHandler(request: FastifyRequest, reply: FastifyReply) {
+  const { id } = request.params as { id: string };
+  const { password } = request.body as { password: string };
+
+  if (!password || password.length < 6) {
+    return reply.status(400).send({ error: true, message: "Password must be at least 6 characters" });
+  }
+
+  try {
+    const user = await resetUserPassword(id, password);
+    return reply.send({ success: true, data: user, message: "Password reset successfully" });
+  } catch (err: any) {
+    return reply.status(400).send({ error: true, message: err.message || "Failed to reset password" });
+  }
+}
+
+export async function toggleUserStatusHandler(request: FastifyRequest, reply: FastifyReply) {
+  const { id } = request.params as { id: string };
+
+  try {
+    const user = await toggleUserStatus(id);
+    return reply.send({
+      success: true,
+      data: user,
+      message: `User ${user.isActive ? "activated" : "deactivated"} successfully`,
+    });
+  } catch (err: any) {
+    return reply.status(400).send({ error: true, message: err.message || "Failed to toggle user status" });
+  }
+}
+
 export async function getAuditLogsHandler(request: FastifyRequest, reply: FastifyReply) {
   const { page, limit } = request.query as { page?: string; limit?: string };
   const pageNum = parseInt(page || "1", 10);
@@ -208,11 +266,11 @@ export async function getCompaniesHandler(request: FastifyRequest, reply: Fastif
 }
 
 export async function createCompanyHandler(request: FastifyRequest, reply: FastifyReply) {
-  const { name, cin } = request.body as { name: string; cin?: string };
-  if (!name) return reply.status(400).send({ error: true, message: "name is required" });
+  const body = request.body as any;
+  if (!body?.name) return reply.status(400).send({ error: true, message: "name is required" });
 
   try {
-    const company = await createCompany({ name, cin });
+    const company = await createCompany(body);
     return reply.status(201).send({ success: true, data: company });
   } catch (err: any) {
     return reply.status(400).send({ error: true, message: err.message || "Failed to create company" });
@@ -243,14 +301,20 @@ export async function deleteCompanyHandler(request: FastifyRequest, reply: Fasti
 }
 
 export async function mergeCompaniesHandler(request: FastifyRequest, reply: FastifyReply) {
-  const { sourceId, targetId } = request.body as { sourceId: string; targetId: string };
-  if (!sourceId || !targetId) {
-    return reply.status(400).send({ error: true, message: "sourceId and targetId are required" });
+  const body = request.body as any;
+  const sourceIds = body.sourceCompanyIds || body.sourceIds || body.sourceId;
+  const targetId = body.targetCompanyId || body.targetId;
+
+  if (!sourceIds || !targetId) {
+    return reply.status(400).send({
+      error: true,
+      message: "sourceCompanyIds (or sourceId) and targetCompanyId (or targetId) are required",
+    });
   }
 
   try {
-    await mergeCompanies(sourceId, targetId);
-    return reply.send({ success: true, message: "Companies merged successfully" });
+    const result = await mergeCompanies(sourceIds, targetId);
+    return reply.send({ success: true, message: "Companies merged successfully", data: result });
   } catch (err: any) {
     return reply.status(400).send({ error: true, message: err.message || "Failed to merge companies" });
   }

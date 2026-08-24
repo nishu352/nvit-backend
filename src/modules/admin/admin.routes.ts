@@ -11,6 +11,10 @@ import {
   clearBankCompaniesHandler,
   clearBankPincodesHandler,
   getUsersHandler,
+  updateUserHandler,
+  deleteUserHandler,
+  resetUserPasswordHandler,
+  toggleUserStatusHandler,
   getAuditLogsHandler,
   getCompaniesHandler,
   createCompanyHandler,
@@ -83,6 +87,10 @@ export async function adminRoutes(app: FastifyInstance) {
 
   // Users Management & Audit Logs
   app.get("/api/v1/admin/users", superOrAdminHandlers, getUsersHandler);
+  app.put("/api/v1/admin/users/:id", superOrAdminHandlers, updateUserHandler);
+  app.delete("/api/v1/admin/users/:id", superOrAdminHandlers, deleteUserHandler);
+  app.post("/api/v1/admin/users/:id/reset-password", superOrAdminHandlers, resetUserPasswordHandler);
+  app.patch("/api/v1/admin/users/:id/toggle-status", superOrAdminHandlers, toggleUserStatusHandler);
   app.get("/api/v1/admin/audit-logs", superOrAdminHandlers, getAuditLogsHandler);
 
   // Companies Management
