@@ -7,6 +7,8 @@ import {
   getFeedbackDetailHandler,
   updateFeedbackHandler,
   deleteFeedbackHandler,
+  generateAiEmailDraftHandler,
+  sendCustomerEmailReplyHandler,
 } from "./feedback.controller.js";
 import { authenticate, authorizeRoles } from "../../middleware/auth.js";
 
@@ -32,4 +34,8 @@ export async function feedbackRoutes(app: FastifyInstance) {
   app.get("/api/v1/admin/feedback/:id", adminHandlers, getFeedbackDetailHandler);
   app.patch("/api/v1/admin/feedback/:id", writeOpsHandlers, updateFeedbackHandler);
   app.delete("/api/v1/admin/feedback/:id", writeOpsHandlers, deleteFeedbackHandler);
+
+  // Gemini AI Email Reply Studio endpoints
+  app.post("/api/v1/admin/feedback/:id/ai-draft", adminHandlers, generateAiEmailDraftHandler);
+  app.post("/api/v1/admin/feedback/:id/send-reply", writeOpsHandlers, sendCustomerEmailReplyHandler);
 }

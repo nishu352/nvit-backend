@@ -8,6 +8,8 @@ import {
   getFeedbackStats,
   getPublicTicketStatus,
 } from "./feedback.service.js";
+import { generateExecutiveEmailDraft } from "../email/geminiEmail.service.js";
+import { sendExecutiveReplyEmail } from "../email/email.service.js";
 import { z } from "zod";
 
 const createFeedbackSchema = z.object({
@@ -220,3 +222,126 @@ export async function deleteFeedbackHandler(request: FastifyRequest, reply: Fast
     });
   }
 }
+
+/**
+ * AI Draft Generator Handler (Powered by Google Gemini 3.7 / 3.5 Flash)
+ */
+export async function generateAiEmailDraftHandler(request: FastifyRequest, reply: FastifyReply) {
+  try {
+    const { id } = request.params as { id: string };
+    const ticket = await getFeedbackTicketById(id);
+    if (!ticket) {
+      return reply.status(404).send({ success: false, error: "Ticket not found" });
+    }
+
+    const body = (request.body || {}) as {
+      roughNotes?: string;
+      tone?: "PROFESSIONAL" | "EMPATHETIC" | "TECHNICAL" | "CLOSURE";
+    };
+
+    const draft = await generateExecutiveEmailDraft({
+      ticketNumber: ticket.ticketNumber,
+      type: ticket.type,
+      customerName: ticket.name,
+      customerEmail: ticket.email,
+      subject: ticket.subject,
+      message: ticket.message,
+      roughNotes: body.roughNotes,
+      tone: body.tone,
+    });
+
+    return reply.send({
+      success: true,
+      data: draft,
+    });
+  } catch (error: any) {
+    request.log.error(error, "Failed to generate AI email draft");
+    return reply.status(500).send({
+      success: false,
+      error: error.message || "Failed to generate AI email draft with Gemini",
+    });
+  }
+}
+
+/**
+ * Send Tailored Customer Email Reply Handler (Dispatches via Hostinger API + Logs History)
+ */
+export async function sendCustomerEmailReplyHandler(request: FastifyRequest, reply: FastifyReply) {
+  try {
+    const { id } = request.params as { id: string };
+    const ticket = await getFeedbackTicketById(id);
+    if (!ticket) {
+      return reply.status(404).send({ success: false, error: "Ticket not found" });
+    }
+
+    const { subject, bodyText, bodyHtml, updateStatus, senderRoleTitle } = request.body as {
+      subject: string;
+      bodyText: string;
+      bodyHtml?: string;
+      updateStatus?: "PENDING" | "OPEN" | "IN_REVIEW" | "IN_PROGRESS" | "RESOLVED" | "REJECTED";
+      senderRoleTitle?: string;
+    };
+
+    if (!subject || !subject.trim()) {
+      return reply.status(400).send({ success: false, error: "Email subject is required" });
+    }
+    if (!bodyText || !bodyText.trim()) {
+      return reply.status(400).send({ success: false, error: "Email body content is required" });
+    }
+
+    // Convert body text to formatted HTML paragraphs if raw HTML was not provided
+    const formattedHtml =
+      bodyHtml && bodyHtml.trim().startsWith("<")
+        ? bodyHtml
+        : `<p style="margin-bottom: 16px;">${bodyText
+            .replace(/\n\n+/g, "</p><p style=\"margin-bottom: 16px;\">")
+            .replace(/\n/g, "<br/>")}</p>`;
+
+    // 1. Dispatch email via Hostinger Official Mail API
+    const mailResult = await sendExecutiveReplyEmail({
+      ticket,
+      customSubject: subject.trim(),
+      bodyHtml: formattedHtml,
+      bodyText: bodyText.trim(),
+      senderRoleTitle,
+    });
+
+    if (!mailResult.success) {
+      return reply.status(502).send({
+        success: false,
+        error: "Failed to dispatch email via Hostinger Mail API. Check server mail logs.",
+      });
+    }
+
+    // 2. Append dispatched email log to ticket adminNotes
+    const timestamp = new Date().toISOString().replace("T", " ").slice(0, 19);
+    const updatedNotes = ticket.adminNotes
+      ? `${ticket.adminNotes}\n\n[Official Email Sent • ${timestamp} UTC]:\nSubject: ${subject}\n${bodyText}`
+      : `[Official Email Sent • ${timestamp} UTC]:\nSubject: ${subject}\n${bodyText}`;
+
+    // 3. Update ticket notes and optional status
+    const updatePayload: any = { adminNotes: updatedNotes };
+    if (updateStatus) {
+      updatePayload.status = updateStatus;
+    }
+
+    const updatedTicket = await updateFeedbackTicket(id, updatePayload);
+
+    return reply.send({
+      success: true,
+      message: `Executive reply successfully dispatched to ${ticket.email}`,
+      data: {
+        ticket: updatedTicket,
+        dispatchedTo: ticket.email,
+        timestamp,
+      },
+    });
+  } catch (error: any) {
+    request.log.error(error, "Failed to send customer email reply");
+    return reply.status(500).send({
+      success: false,
+      error: error.message || "Failed to send customer email reply",
+    });
+  }
+}
+

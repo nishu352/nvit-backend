@@ -491,3 +491,151 @@ export async function sendStatusUpdateEmail(ticket: EmailTicketData, previousSta
     html,
   });
 }
+
+/**
+ * 03 — Executive Tailored Email Reply (AI-drafted or Admin-edited)
+ * Delivered directly to customer with maximum deliverability, authentic corporate signature & online tracking link.
+ */
+export async function sendExecutiveReplyEmail(options: {
+  ticket: EmailTicketData;
+  customSubject: string;
+  bodyHtml: string;
+  bodyText?: string;
+  senderRoleTitle?: string;
+}) {
+  const { ticket, customSubject, bodyHtml, bodyText, senderRoleTitle } = options;
+  const isInquiry = ticket.type === "INQUIRY" || ticket.type === "ENQUIRY";
+  const fromAddress = isInquiry ? SMTP_FROM_INFO : SMTP_FROM_SUPPORT;
+  const trackingUrl = `${PUBLIC_APP_URL}/check-status?ticket=${ticket.ticketNumber}`;
+
+  const html = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <title>${customSubject}</title>
+    </head>
+    <body style="margin: 0; padding: 0; background-color: #f1f5f9; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; -webkit-font-smoothing: antialiased;">
+      <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #f1f5f9; padding: 36px 12px;">
+        <tr>
+          <td align="center">
+            <!-- Brand Pre-header Bar -->
+            <table width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width: 620px; margin-bottom: 12px;">
+              <tr>
+                <td style="padding: 0 4px; color: #64748b; font-size: 11px; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase;">
+                  Verified Client Correspondence &bull; Ref: #${ticket.ticketNumber}
+                </td>
+                <td align="right" style="padding: 0 4px; color: #64748b; font-size: 11px; font-weight: 600;">
+                  <a href="${trackingUrl}" style="color: #2563eb; text-decoration: none;">Track Online &rarr;</a>
+                </td>
+              </tr>
+            </table>
+
+            <!-- Card Container -->
+            <table width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width: 620px; background-color: #ffffff; border-radius: 16px; overflow: hidden; box-shadow: 0 10px 25px -5px rgba(15, 23, 42, 0.08), 0 8px 10px -6px rgba(15, 23, 42, 0.04); border: 1px solid #e2e8f0;">
+              
+              <!-- Header Gradient Banner -->
+              <tr>
+                <td style="background: linear-gradient(135deg, #070B12 0%, #0F172A 100%); padding: 32px 36px; border-bottom: 3px solid #2563eb;">
+                  <table width="100%" cellpadding="0" cellspacing="0" border="0">
+                    <tr>
+                      <td>
+                        <div style="color: #ffffff; font-size: 22px; font-weight: 900; letter-spacing: -0.5px;">
+                          NVIT<span style="color: #3b82f6;">.</span><span style="color: #94a3b8; font-weight: 300;">SPACE</span>
+                        </div>
+                        <div style="color: #94a3b8; font-size: 11px; text-transform: uppercase; letter-spacing: 2px; font-weight: 700; margin-top: 3px;">
+                          Digital Engineering &amp; Solutions Studio
+                        </div>
+                      </td>
+                      <td align="right" valign="middle">
+                        <span style="display: inline-block; background: rgba(59, 130, 246, 0.15); border: 1px solid rgba(59, 130, 246, 0.3); color: #93c5fd; font-size: 11px; font-weight: 700; padding: 6px 12px; border-radius: 9999px;">
+                          ${isInquiry ? "Studio Desk" : "Client Support"}
+                        </span>
+                      </td>
+                    </tr>
+                  </table>
+                </td>
+              </tr>
+
+              <!-- Email Body Content -->
+              <tr>
+                <td style="padding: 36px 36px 28px 36px;">
+                  
+                  <!-- Main Message Content -->
+                  <div style="color: #1e293b; font-size: 14px; line-height: 1.7; font-weight: 400;">
+                    ${bodyHtml}
+                  </div>
+
+                  <!-- Reference Badge / Case Details Card -->
+                  <div style="margin-top: 28px; padding: 18px 20px; background: #f8fafc; border-radius: 12px; border: 1px solid #e2e8f0;">
+                    <table width="100%" cellpadding="0" cellspacing="0" border="0">
+                      <tr>
+                        <td>
+                          <div style="color: #64748b; font-size: 10.5px; text-transform: uppercase; font-weight: 800; letter-spacing: 0.5px;">Case Reference</div>
+                          <div style="color: #0f172a; font-size: 14px; font-weight: 800; font-family: monospace; margin-top: 2px;">#${ticket.ticketNumber}</div>
+                        </td>
+                        <td align="right">
+                          <a href="${trackingUrl}" style="display: inline-block; background: #0f172a; color: #ffffff; text-decoration: none; font-size: 11.5px; font-weight: 700; padding: 8px 16px; border-radius: 8px;">
+                            Check Live Status &rarr;
+                          </a>
+                        </td>
+                      </tr>
+                    </table>
+                  </div>
+
+                  <!-- Executive Sign-Off -->
+                  <div style="margin-top: 32px; padding-top: 20px; border-top: 1px solid #f1f5f9;">
+                    <table width="100%" cellpadding="0" cellspacing="0" border="0">
+                      <tr>
+                        <td style="vertical-align: top;">
+                          <div style="color: #0f172a; font-size: 13.5px; font-weight: 800;">
+                            Nishant Bhardwaj
+                          </div>
+                          <div style="color: #64748b; font-size: 12px; font-weight: 500; margin-top: 2px;">
+                            ${senderRoleTitle || (isInquiry ? "Lead Director &bull; NVIT.SPACE Studio" : "Client Operations Lead &bull; NVIT.SPACE")}
+                          </div>
+                          <div style="color: #3b82f6; font-size: 11.5px; font-weight: 600; margin-top: 4px;">
+                            <a href="https://nvit.space" style="color: #2563eb; text-decoration: none;">www.nvit.space</a> &bull; 
+                            <a href="mailto:${isInquiry ? "info@nvit.space" : "support@nvit.space"}" style="color: #2563eb; text-decoration: none;">${isInquiry ? "info@nvit.space" : "support@nvit.space"}</a>
+                          </div>
+                        </td>
+                      </tr>
+                    </table>
+                  </div>
+
+                </td>
+              </tr>
+
+              <!-- Footer with Legal & Contact Info -->
+              <tr>
+                <td style="padding: 24px 36px; background-color: #f8fafc; border-top: 1px solid #e2e8f0; color: #64748b; font-size: 11px; line-height: 1.6;">
+                  <p style="margin: 0 0 8px 0;">
+                    You received this direct message regarding your enquiry/ticket with <strong>NVIT.SPACE</strong>. You can respond directly to this email or track progress anytime on our portal.
+                  </p>
+                  <p style="margin: 0; color: #94a3b8;">
+                    &copy; ${new Date().getFullYear()} NVIT.SPACE Technologies. All rights reserved. &bull; <a href="${PUBLIC_APP_URL}/privacy-policy" style="color: #64748b; text-decoration: underline;">Privacy Policy</a> &bull; <a href="${PUBLIC_APP_URL}/terms" style="color: #64748b; text-decoration: underline;">Terms of Service</a>
+                  </p>
+                </td>
+              </tr>
+
+            </table>
+          </td>
+        </tr>
+      </table>
+    </body>
+    </html>
+  `;
+
+  return sendMailSafe({
+    from: fromAddress,
+    displayName: isInquiry
+      ? "NVIT.SPACE Studio (info@nvit.space)"
+      : "NVIT.SPACE Client Support (support@nvit.space)",
+    to: ticket.email,
+    subject: customSubject,
+    html,
+    text: bodyText || bodyHtml.replace(/<[^>]*>?/gm, ""),
+  });
+}
+
