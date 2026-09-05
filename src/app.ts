@@ -64,7 +64,9 @@ export async function buildApp() {
           hostname === "127.0.0.1" ||
           hostname === "nvit.space" ||
           hostname.endsWith(".nvit.space") ||
-          /^nvit(-[a-z0-9-]+)?\.vercel\.app$/.test(hostname)
+          hostname.endsWith(".vercel.app") ||
+          hostname.endsWith(".railway.app") ||
+          hostname.endsWith(".up.railway.app")
         ) {
           cb(null, true);
           return;
