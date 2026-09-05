@@ -6,11 +6,12 @@ import {
   updateFeedbackTicket,
   deleteFeedbackTicket,
   getFeedbackStats,
+  getPublicTicketStatus,
 } from "./feedback.service.js";
 import { z } from "zod";
 
 const createFeedbackSchema = z.object({
-  type: z.enum(["COMPLAINT", "FEEDBACK", "GRIEVANCE", "SUGGESTION", "SUPPORT"]).optional().default("FEEDBACK"),
+  type: z.enum(["COMPLAINT", "FEEDBACK", "GRIEVANCE", "SUGGESTION", "SUPPORT", "INQUIRY", "ENQUIRY"]).optional().default("FEEDBACK"),
   name: z.string().min(2, "Name is required"),
   email: z.string().email("Valid email is required"),
   phone: z.string().optional(),
@@ -19,7 +20,7 @@ const createFeedbackSchema = z.object({
 });
 
 const updateFeedbackSchema = z.object({
-  status: z.enum(["PENDING", "IN_REVIEW", "RESOLVED", "REJECTED"]).optional(),
+  status: z.enum(["PENDING", "OPEN", "IN_REVIEW", "IN_PROGRESS", "RESOLVED", "REJECTED"]).optional(),
   priority: z.enum(["LOW", "NORMAL", "HIGH", "URGENT"]).optional(),
   adminNotes: z.string().optional(),
 });
@@ -50,11 +51,16 @@ export async function submitFeedbackHandler(request: FastifyRequest, reply: Fast
       userAgent,
     });
 
+    const isInquiry = ticket.type === "INQUIRY" || ticket.type === "ENQUIRY";
+
     return reply.status(201).send({
       success: true,
-      message: "Your inquiry/feedback has been submitted successfully to support@nvit.space",
+      message: isInquiry
+        ? `Your project inquiry has been received. Reference ID: ${ticket.ticketNumber}`
+        : `Your ticket has been submitted successfully to support@nvit.space. Reference ID: ${ticket.ticketNumber}`,
       data: {
         ticketNumber: ticket.ticketNumber,
+        type: ticket.type,
         status: ticket.status,
         createdAt: ticket.createdAt,
       },
@@ -64,6 +70,37 @@ export async function submitFeedbackHandler(request: FastifyRequest, reply: Fast
     return reply.status(500).send({
       success: false,
       error: "Failed to submit feedback ticket",
+    });
+  }
+}
+
+export async function getPublicTicketStatusHandler(request: FastifyRequest, reply: FastifyReply) {
+  try {
+    const { ticketNumber } = request.params as { ticketNumber: string };
+    if (!ticketNumber || ticketNumber.trim().length < 3) {
+      return reply.status(400).send({
+        success: false,
+        error: "A valid ticket or enquiry reference number is required",
+      });
+    }
+
+    const ticket = await getPublicTicketStatus(ticketNumber);
+    if (!ticket) {
+      return reply.status(404).send({
+        success: false,
+        error: "No enquiry or ticket found with this reference number. Please verify the ID and try again.",
+      });
+    }
+
+    return reply.send({
+      success: true,
+      data: ticket,
+    });
+  } catch (error: any) {
+    request.log.error(error, "Failed to fetch ticket status");
+    return reply.status(500).send({
+      success: false,
+      error: "Failed to retrieve status",
     });
   }
 }
