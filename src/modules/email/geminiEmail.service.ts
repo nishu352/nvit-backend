@@ -77,7 +77,7 @@ export async function generateExecutiveEmailDraft(
 
   const toneInstruction = getToneGuidelines(params.tone || "PROFESSIONAL", params.type);
 
-  const prompt = `You are the Senior Client Director & Executive Communications Lead at NVIT.SPACE (a premier Digital Engineering, Financial Technology & Lending Solutions Studio, URL: https://nvit.space).
+  const prompt = `You are the Client Communications & Operations Lead at NVIT.SPACE (a premier Digital Engineering, Financial Technology & Lending Solutions Studio, URL: https://nvit.space).
 
 Your responsibility is to craft a personal, authentic, articulate, and empathetic email reply to a customer.
 
@@ -106,7 +106,7 @@ STRICT ANTI-SPAM & PROFESSIONALISM CRITERIA:
 5. Provide clear, concrete next steps or timelines (e.g. scheduled review, direct consultation, resolution tracking).
 6. Sign off professionally:
    "Warm regards,
-   Nishant Bhardwaj & The NVIT.SPACE Client Team
+   The NVIT.SPACE Client Operations Team
    NVIT.SPACE Digital Solutions | https://nvit.space"
 
 OUTPUT FORMAT:

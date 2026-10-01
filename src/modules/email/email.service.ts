@@ -501,9 +501,10 @@ export async function sendExecutiveReplyEmail(options: {
   customSubject: string;
   bodyHtml: string;
   bodyText?: string;
+  senderName?: string;
   senderRoleTitle?: string;
 }) {
-  const { ticket, customSubject, bodyHtml, bodyText, senderRoleTitle } = options;
+  const { ticket, customSubject, bodyHtml, bodyText, senderName, senderRoleTitle } = options;
   const isInquiry = ticket.type === "INQUIRY" || ticket.type === "ENQUIRY";
   const fromAddress = isInquiry ? SMTP_FROM_INFO : SMTP_FROM_SUPPORT;
   const trackingUrl = `${PUBLIC_APP_URL}/check-status?ticket=${ticket.ticketNumber}`;
@@ -590,10 +591,10 @@ export async function sendExecutiveReplyEmail(options: {
                       <tr>
                         <td style="vertical-align: top;">
                           <div style="color: #0f172a; font-size: 13.5px; font-weight: 800;">
-                            Nishant Bhardwaj
+                            ${senderName || (isInquiry ? "NVIT.SPACE Engineering Desk" : "Client Operations Desk")}
                           </div>
                           <div style="color: #64748b; font-size: 12px; font-weight: 500; margin-top: 2px;">
-                            ${senderRoleTitle || (isInquiry ? "Lead Director &bull; NVIT.SPACE Studio" : "Client Operations Lead &bull; NVIT.SPACE")}
+                            ${senderRoleTitle || (isInquiry ? "Solutions Engineering &bull; NVIT.SPACE" : "Client Operations Lead &bull; NVIT.SPACE")}
                           </div>
                           <div style="color: #3b82f6; font-size: 11.5px; font-weight: 600; margin-top: 4px;">
                             <a href="https://nvit.space" style="color: #2563eb; text-decoration: none;">www.nvit.space</a> &bull; 
