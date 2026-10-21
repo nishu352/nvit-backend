@@ -68,9 +68,42 @@ export class SimpleLRUCache<T> {
   }
 }
 
-// Global bounded instance for company autocomplete suggestions
-export const companyAutocompleteCache = new SimpleLRUCache<any[]>(500, 5 * 60 * 1000);
+// Global bounded instances for company autocomplete, search results, and partner banks
+export const companyAutocompleteCache = new SimpleLRUCache<any[]>(1000, 5 * 60 * 1000);
+export const companySearchCache = new SimpleLRUCache<any>(500, 3 * 60 * 1000);
+export const partnerBanksCache = new SimpleLRUCache<any[]>(10, 15 * 60 * 1000);
+export const companyAliasesCache = new SimpleLRUCache<any[]>(10, 15 * 60 * 1000);
+
+/**
+ * Singleflight Request Coalescing
+ * Prevents "thundering herd" by sharing an in-flight Promise among identical concurrent requests.
+ */
+export class Singleflight {
+  private inFlight = new Map<string, Promise<any>>();
+
+  async do<T>(key: string, fn: () => Promise<T>): Promise<T> {
+    const existing = this.inFlight.get(key);
+    if (existing) {
+      return existing as Promise<T>;
+    }
+
+    const promise = fn()
+      .finally(() => {
+        this.inFlight.delete(key);
+      });
+
+    this.inFlight.set(key, promise);
+    return promise;
+  }
+}
+
+export const searchSingleflight = new Singleflight();
+export const autocompleteSingleflight = new Singleflight();
 
 export function clearCompanyCache(): void {
   companyAutocompleteCache.clear();
+  companySearchCache.clear();
+  partnerBanksCache.clear();
+  companyAliasesCache.clear();
 }
+

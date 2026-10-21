@@ -143,13 +143,19 @@ export function calculateCompanyRelevance(
   }
 
   // ── 1. EXACT MATCH (Score: 100) ───────────────────────────────────────────
+  // Full normalized name or clean name exact match
   if (
     cleanName === cleanQ ||
     rawCleanName === cleanQ ||
-    (normQ && normC && normQ === normC && normQ.length >= 2) ||
-    (baseQ && baseC && baseQ === baseC && baseQ.length >= 2)
+    (normQ && normC && normQ === normC && normQ.length >= 2)
   ) {
     return { score: 100, matchType: "EXACT_MATCH", matchedTokens: totalTokens, totalTokens };
+  }
+
+  // ── 1b. EXACT BASE MATCH (Score: 99) ───────────────────────────────────────
+  // Identical base entity name with differing corporate suffixes (e.g. "NIF PRIVATE" vs "NIF LIMITED")
+  if (baseQ && baseC && baseQ === baseC && baseQ.length >= 2) {
+    return { score: 99, matchType: "EXACT_MATCH", matchedTokens: totalTokens, totalTokens };
   }
 
   // ── 2. EXACT PREFIX MATCH (Score: 92 - 98) ───────────────────────────────
@@ -161,10 +167,7 @@ export function calculateCompanyRelevance(
   }
 
   // Normalized prefix match (handles spaceless typing e.g. "indianfarmersfer" -> "INDIAN FARMERS FERTILISER...")
-  if (
-    (normQ && normC && normC.startsWith(normQ) && normQ.length >= 3) ||
-    (baseQ && baseC && baseC.startsWith(baseQ) && baseQ.length >= 3)
-  ) {
+  if (normQ && normC && normC.startsWith(normQ) && normQ.length >= 3) {
     const lengthPenalty = Math.min(6, Math.floor((normC.length - normQ.length) / 10));
     const score = Math.max(90, 96 - lengthPenalty);
     return { score, matchType: "NORMALIZED_PREFIX", matchedTokens: totalTokens, totalTokens };

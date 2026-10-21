@@ -3,6 +3,7 @@ import { companySearchSchema } from "./company.schema.js";
 import { searchCompanies, getCompanyAutocomplete } from "./company.service.js";
 
 export async function searchCompaniesHandler(request: FastifyRequest, reply: FastifyReply) {
+  const start = performance.now();
   const result = companySearchSchema.safeParse(request.query);
   if (!result.success) {
     return reply.status(400).send({ error: true, errors: result.error.format() });
@@ -19,9 +20,12 @@ export async function searchCompaniesHandler(request: FastifyRequest, reply: Fas
       state: result.data.state,
       bankId: result.data.bankId,
       category: result.data.category,
+      companyId: result.data.companyId,
     });
 
-    reply.header("Cache-Control", "public, max-age=60, stale-while-revalidate=180");
+    const elapsed = Math.round(performance.now() - start);
+    reply.header("Server-Timing", `total;dur=${elapsed}`);
+    reply.header("Cache-Control", "public, max-age=180, stale-while-revalidate=600");
     return reply.send({
       success: true,
       count: data.length,
@@ -34,6 +38,7 @@ export async function searchCompaniesHandler(request: FastifyRequest, reply: Fas
 }
 
 export async function autocompleteHandler(request: FastifyRequest, reply: FastifyReply) {
+  const start = performance.now();
   const { q } = request.query as { q?: string };
   if (!q || q.trim().length === 0) {
     return reply.send({ success: true, data: [] });
@@ -41,7 +46,9 @@ export async function autocompleteHandler(request: FastifyRequest, reply: Fastif
 
   try {
     const suggestions = await getCompanyAutocomplete(q);
-    reply.header("Cache-Control", "public, max-age=120, stale-while-revalidate=300");
+    const elapsed = Math.round(performance.now() - start);
+    reply.header("Server-Timing", `total;dur=${elapsed}`);
+    reply.header("Cache-Control", "public, max-age=300, stale-while-revalidate=900");
     return reply.send({
       success: true,
       data: suggestions,

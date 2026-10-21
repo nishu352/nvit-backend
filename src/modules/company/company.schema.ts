@@ -9,6 +9,7 @@ export const companySearchSchema = z.object({
   state: z.string().optional(),
   bankId: z.string().optional(),
   category: z.string().optional(),
+  companyId: z.string().optional(),
 });
 
 export type CompanySearchInput = z.infer<typeof companySearchSchema>;

@@ -24,6 +24,7 @@ export function normalizeCompanyName(name: string): NormalizedCompany {
     .replace(/\bP LTD\b/g, "PVT LTD")
     .replace(/\bP\.? LTD\.?\b/g, "PVT LTD")
     .replace(/\bPVT\.?\b/g, "PVT")
+    .replace(/\bPRIVATE\b/g, "PVT")
     .replace(/\bLIMITED\b/g, "LTD")
     .replace(/\bLTD\.\b/g, "LTD")
     .replace(/\bCORPORATION\b/g, "CORP")

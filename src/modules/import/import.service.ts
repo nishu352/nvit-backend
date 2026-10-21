@@ -6,6 +6,7 @@ import { getAiMapping } from "./import.aiMapper.js";
 import { createSession, getSession, deleteSession } from "./import.session.js";
 import { createAuditLog } from "../../utils/auditLogger.js";
 import { normalizeCompanyName } from "../../utils/normalize.js";
+import { clearCompanyCache } from "../../utils/lruCache.js";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -811,6 +812,9 @@ async function processConfirmedImportBackground(
         completedAt: new Date(),
       },
     });
+
+    // Invalidate company search and autocomplete caches to reflect imported updates immediately
+    clearCompanyCache();
 
     await createAuditLog({
       userId,

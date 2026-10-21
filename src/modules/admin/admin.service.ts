@@ -2,6 +2,7 @@ import { prisma } from "../../config/prisma.js";
 import { normalizeCompanyName } from "../../utils/normalize.js";
 import { calculateCompanyRelevance, tokenize } from "../../utils/relevanceRanker.js";
 import { hashPassword } from "../../utils/hash.js";
+import { clearCompanyCache } from "../../utils/lruCache.js";
 import path from "path";
 import fs from "fs";
 
@@ -1334,7 +1335,7 @@ export async function getCategoryMappings(page: number = 1, limit: number = 30, 
 }
 
 export async function createCategoryMapping(data: { companyId: string; bankId: string; category: string; status?: string; remarks?: string }) {
-  return await prisma.companyBankCategory.upsert({
+  const result = await prisma.companyBankCategory.upsert({
     where: {
       companyId_bankId: {
         companyId: data.companyId,
@@ -1354,10 +1355,12 @@ export async function createCategoryMapping(data: { companyId: string; bankId: s
       remarks: data.remarks || null,
     },
   });
+  clearCompanyCache();
+  return result;
 }
 
 export async function updateCategoryMapping(id: string, data: { category?: string; status?: string; remarks?: string }) {
-  return await prisma.companyBankCategory.update({
+  const result = await prisma.companyBankCategory.update({
     where: { id },
     data: {
       category: data.category?.trim(),
@@ -1365,12 +1368,16 @@ export async function updateCategoryMapping(id: string, data: { category?: strin
       remarks: data.remarks,
     },
   });
+  clearCompanyCache();
+  return result;
 }
 
 export async function deleteCategoryMapping(id: string) {
-  return await prisma.companyBankCategory.delete({
+  const result = await prisma.companyBankCategory.delete({
     where: { id },
   });
+  clearCompanyCache();
+  return result;
 }
 
 export async function getPolicyHistory(policyId: string) {
