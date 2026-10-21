@@ -17,6 +17,7 @@ import {
   toggleUserStatusHandler,
   getAuditLogsHandler,
   getCompaniesHandler,
+  getCompanyHandler,
   createCompanyHandler,
   updateCompanyHandler,
   deleteCompanyHandler,
@@ -95,6 +96,7 @@ export async function adminRoutes(app: FastifyInstance) {
 
   // Companies Management
   app.get("/api/v1/admin/companies", readAllHandlers, getCompaniesHandler);
+  app.get("/api/v1/admin/companies/:id", readAllHandlers, getCompanyHandler);
   app.post("/api/v1/admin/companies", writeOpsHandlers, createCompanyHandler);
   app.put("/api/v1/admin/companies/:id", writeOpsHandlers, updateCompanyHandler);
   app.delete("/api/v1/admin/companies/:id", writeOpsHandlers, deleteCompanyHandler);

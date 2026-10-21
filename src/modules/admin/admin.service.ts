@@ -346,6 +346,8 @@ export async function clearBankCompanies(bankId: string, cleanOrphans: boolean =
     }
   }
 
+  clearCompanyCache();
+
   return {
     deletedMappings: deleteResult.count,
     deletedOrphans: orphanCount,
@@ -724,7 +726,7 @@ export async function createCompany(data: {
   const { normalizedName, baseName } = normalizeCompanyName(data.name);
   const categoriesToSave = data.categories || data.bankCategories || [];
 
-  return await prisma.$transaction(
+  const result = await prisma.$transaction(
     async (tx) => {
       const company = await tx.company.create({
         data: {
@@ -785,6 +787,9 @@ export async function createCompany(data: {
     },
     { timeout: 30000, maxWait: 15000 }
   );
+
+  clearCompanyCache();
+  return result;
 }
 
 export async function updateCompany(
@@ -841,7 +846,7 @@ export async function updateCompany(
     updateData.status = data.status;
   }
 
-  return await prisma.$transaction(
+  const result = await prisma.$transaction(
     async (tx) => {
       const updatedCompany = await tx.company.update({
         where: { id },
@@ -904,12 +909,32 @@ export async function updateCompany(
     },
     { timeout: 30000, maxWait: 15000 }
   );
+
+  clearCompanyCache();
+  return result;
+}
+
+export async function getCompany(id: string) {
+  return await prisma.company.findUnique({
+    where: { id },
+    include: {
+      bankCategories: {
+        include: {
+          bank: {
+            select: { id: true, name: true, code: true, type: true, logoUrl: true },
+          },
+        },
+      },
+    },
+  });
 }
 
 export async function deleteCompany(id: string) {
-  return await prisma.company.delete({
+  const result = await prisma.company.delete({
     where: { id },
   });
+  clearCompanyCache();
+  return result;
 }
 
 export async function mergeCompanies(sourceIds: string | string[], targetId: string) {
@@ -921,7 +946,7 @@ export async function mergeCompanies(sourceIds: string | string[], targetId: str
     throw new Error("No valid source companies provided for merge.");
   }
 
-  return await prisma.$transaction(
+  const result = await prisma.$transaction(
     async (tx) => {
       const targetCompany = await tx.company.findUnique({
         where: { id: targetId },
@@ -1036,6 +1061,9 @@ export async function mergeCompanies(sourceIds: string | string[], targetId: str
     },
     { timeout: 45000, maxWait: 20000 }
   );
+
+  clearCompanyCache();
+  return result;
 }
 
 export async function bulkUpdateCompanyCategories(companyIds: string[], bankId: string, category: string, status: string, remarks?: string) {
@@ -1062,7 +1090,9 @@ export async function bulkUpdateCompanyCategories(companyIds: string[], bankId: 
     });
   });
 
-  return await Promise.all(updates);
+  const result = await Promise.all(updates);
+  clearCompanyCache();
+  return result;
 }
 
 export async function getPincodesList(page: number = 1, limit: number = 30, query?: string) {

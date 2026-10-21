@@ -25,7 +25,11 @@ export async function searchCompaniesHandler(request: FastifyRequest, reply: Fas
 
     const elapsed = Math.round(performance.now() - start);
     reply.header("Server-Timing", `total;dur=${elapsed}`);
-    reply.header("Cache-Control", "public, max-age=180, stale-while-revalidate=600");
+    if (data.length === 0) {
+      reply.header("Cache-Control", "no-cache, no-store, must-revalidate");
+    } else {
+      reply.header("Cache-Control", "public, max-age=60, stale-while-revalidate=120");
+    }
     return reply.send({
       success: true,
       count: data.length,

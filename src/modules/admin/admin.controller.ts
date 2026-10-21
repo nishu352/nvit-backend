@@ -17,6 +17,7 @@ import {
   toggleUserStatus,
   getAuditLogsList,
   getCompaniesList,
+  getCompany,
   createCompany,
   updateCompany,
   deleteCompany,
@@ -262,6 +263,19 @@ export async function getCompaniesHandler(request: FastifyRequest, reply: Fastif
     return reply.send({ success: true, data });
   } catch (err: any) {
     return reply.status(500).send({ error: true, message: err.message || "Failed to fetch companies" });
+  }
+}
+
+export async function getCompanyHandler(request: FastifyRequest, reply: FastifyReply) {
+  const { id } = request.params as { id: string };
+  try {
+    const company = await getCompany(id);
+    if (!company) {
+      return reply.status(404).send({ error: true, message: "Company not found" });
+    }
+    return reply.send({ success: true, data: company });
+  } catch (err: any) {
+    return reply.status(500).send({ error: true, message: err.message || "Failed to fetch company" });
   }
 }
 
