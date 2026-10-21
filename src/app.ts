@@ -1,6 +1,7 @@
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import helmet from "@fastify/helmet";
+import compress from "@fastify/compress";
 import rateLimit from "@fastify/rate-limit";
 import jwt from "@fastify/jwt";
 import cookie from "@fastify/cookie";
@@ -77,6 +78,11 @@ export async function buildApp() {
     },
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     credentials: true,
+  });
+
+  // Response Compression (threshold: 1KB, supports gzip, brotli, deflate)
+  await app.register(compress, {
+    threshold: 1024,
   });
 
   await app.register(rateLimit, {

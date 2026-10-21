@@ -1,6 +1,7 @@
 import { prisma } from "../../config/prisma.js";
 import { normalizeCompanyName } from "../../utils/normalize.js";
 import { calculateCompanyRelevance, tokenize } from "../../utils/relevanceRanker.js";
+import { companyAutocompleteCache } from "../../utils/lruCache.js";
 
 export interface CompanySearchFilters {
   limit?: number;
@@ -309,16 +310,159 @@ export async function searchCompanies(query: string, filters: CompanySearchFilte
   });
 }
 
-// ─── Company Autocomplete / Suggestions ───────────────────────────────────────
+// ─── Company Autocomplete / Suggestions (Lean Query + In-Memory LRU Cache) ───
+/**
+ * Dedicated lean candidate retrieval & relevance scoring pipeline for autocomplete.
+ * Selects only scalar fields needed for ranking and the API response (id, name, normalizedName, baseName, cin, pincode, city, state).
+ * Completely omits bankCategories and bank joins to eliminate relational overfetching.
+ */
+async function getLeanCompanyCandidates(
+  query: string,
+  candidatePoolLimit: number = 60
+) {
+  const cleanQuery = (query || "").trim();
+  if (!cleanQuery) return [];
+
+  const { normalizedName, baseName } = normalizeCompanyName(cleanQuery);
+  const tokens = tokenize(cleanQuery);
+
+  // Check aliases if normalizedName is available (bounded to 20)
+  let aliasCompanyIds: string[] = [];
+  if (normalizedName) {
+    const matchedAliases = await prisma.companyAlias.findMany({
+      where: { alias: { startsWith: normalizedName } },
+      select: { companyId: true },
+      take: 20,
+    });
+    aliasCompanyIds = matchedAliases.map((a) => a.companyId);
+  }
+
+  const candidateMap = new Map<string, any>();
+
+  const leanSelect = {
+    id: true,
+    name: true,
+    normalizedName: true,
+    baseName: true,
+    cin: true,
+    pincode: true,
+    city: true,
+    state: true,
+  };
+
+  // ── PHASE 1: Multi-Token ALL-MATCH (Highest Priority Candidate Pool) ─────────
+  if (tokens.length > 1) {
+    const validTokens = tokens.filter((t) => t.length >= 2);
+    if (validTokens.length > 0) {
+      const allTokenMatches = await prisma.company.findMany({
+        where: {
+          status: "ACTIVE",
+          AND: validTokens.map((t) => ({
+            name: { contains: t, mode: "insensitive" },
+          })),
+        },
+        take: 40,
+        select: leanSelect,
+      });
+
+      for (const c of allTokenMatches) {
+        candidateMap.set(c.id, c);
+      }
+    }
+  }
+
+  // ── PHASE 2: Prefix & Broad Contains Matches ──────────────────────────────────
+  const prefixOrConditions: any[] = [
+    // Direct exact / phrase prefix
+    { name: { startsWith: cleanQuery, mode: "insensitive" } },
+    ...(normalizedName ? [{ normalizedName: { contains: normalizedName } }] : []),
+    ...(baseName ? [{ baseName: { contains: baseName } }] : []),
+    // Substring contains
+    { name: { contains: cleanQuery, mode: "insensitive" } },
+    { cin: { contains: cleanQuery, mode: "insensitive" } },
+    ...(aliasCompanyIds.length > 0 ? [{ id: { in: aliasCompanyIds } }] : []),
+  ];
+
+  if (tokens.length > 1 && candidateMap.size < 15 && tokens[0] && tokens[0].length >= 3) {
+    prefixOrConditions.push({ name: { startsWith: tokens[0], mode: "insensitive" } });
+  }
+
+  const remainingLimit = candidatePoolLimit - candidateMap.size;
+  if (remainingLimit > 0) {
+    const prefixMatches = await prisma.company.findMany({
+      where: {
+        status: "ACTIVE",
+        OR: prefixOrConditions,
+      },
+      take: remainingLimit,
+      select: leanSelect,
+    });
+
+    for (const c of prefixMatches) {
+      if (!candidateMap.has(c.id)) {
+        candidateMap.set(c.id, c);
+      }
+    }
+  }
+
+  // Deduplicate by baseName / normalizedName / id
+  const dedupedMap = new Map<string, any>();
+  for (const c of candidateMap.values()) {
+    const key = c.baseName || c.normalizedName || c.id;
+    if (!dedupedMap.has(key)) {
+      dedupedMap.set(key, c);
+    }
+  }
+
+  // Score & Rank with Central Relevance Engine
+  const scored = Array.from(dedupedMap.values())
+    .map((c) => {
+      const rel = calculateCompanyRelevance(
+        c.name,
+        cleanQuery,
+        c.normalizedName,
+        c.baseName,
+        c.cin,
+        c.city,
+        c.state,
+        c.pincode
+      );
+      return {
+        ...c,
+        relevanceScore: rel.score,
+        matchType: rel.matchType,
+      };
+    })
+    .filter((c) => c.relevanceScore > 0);
+
+  // Deterministic sorting (exact same hierarchy as main search)
+  scored.sort((a, b) => {
+    if (b.relevanceScore !== a.relevanceScore) {
+      return b.relevanceScore - a.relevanceScore;
+    }
+    if (a.name.length !== b.name.length) {
+      return a.name.length - b.name.length;
+    }
+    return a.name.localeCompare(b.name);
+  });
+
+  return scored;
+}
 
 export async function getCompanyAutocomplete(query: string) {
   const cleanQuery = (query || "").trim();
   if (!cleanQuery) return [];
 
-  // Use the exact same candidate retrieval & relevance scoring pipeline
-  const ranked = await getRankedCompanyCandidates(cleanQuery, {}, 80);
+  const cacheKey = cleanQuery.toLowerCase();
+  const cached = companyAutocompleteCache.get(cacheKey);
+  if (cached) {
+    return cached;
+  }
 
-  return ranked.slice(0, 10).map((c) => ({
+  // Use the dedicated lean candidate retrieval pipeline (no bankCategories)
+  const ranked = await getLeanCompanyCandidates(cleanQuery, 60);
+
+  const results = ranked.slice(0, 10).map((c) => ({
     id: c.id,
     name: c.name,
     city: c.city,
@@ -326,6 +470,12 @@ export async function getCompanyAutocomplete(query: string) {
     relevanceScore: c.relevanceScore,
     matchType: c.matchType,
   }));
+
+  // Cache non-empty results for 5 minutes, empty for 15 seconds
+  const ttl = results.length > 0 ? 5 * 60 * 1000 : 15 * 1000;
+  companyAutocompleteCache.set(cacheKey, results, ttl);
+
+  return results;
 }
 
 // ─── Single Company Detail by ID ──────────────────────────────────────────────

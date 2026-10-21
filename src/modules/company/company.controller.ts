@@ -21,6 +21,7 @@ export async function searchCompaniesHandler(request: FastifyRequest, reply: Fas
       category: result.data.category,
     });
 
+    reply.header("Cache-Control", "public, max-age=60, stale-while-revalidate=180");
     return reply.send({
       success: true,
       count: data.length,
@@ -40,6 +41,7 @@ export async function autocompleteHandler(request: FastifyRequest, reply: Fastif
 
   try {
     const suggestions = await getCompanyAutocomplete(q);
+    reply.header("Cache-Control", "public, max-age=120, stale-while-revalidate=300");
     return reply.send({
       success: true,
       data: suggestions,
